@@ -20,6 +20,7 @@ import pandas as pd
 import streamlit as st
 
 import apify_jobs
+import auth
 import config
 import db
 import lookup_infographic
@@ -2389,6 +2390,11 @@ _Y2K_FLOWER = '<svg class="ff-star" viewBox="0 0 24 24" fill="currentColor"><pat
 
 
 def main() -> None:
+    # Auth gate — solo se activa si hay usuarios configurados en
+    # .streamlit/secrets.toml. En dev local sin secrets, pasa libre.
+    if not auth.gate():
+        st.stop()
+
     st.sidebar.markdown(_logo_html(), unsafe_allow_html=True)
 
     # Permite navegación programática (set session_state.active_page + rerun)
@@ -2399,6 +2405,7 @@ def main() -> None:
     st.session_state.active_page = page
 
     st.sidebar.divider()
+    auth.logout_button()
     st.sidebar.caption(f"Last refresh: {datetime.now().strftime('%H:%M:%S')}")
 
     render_header()
