@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.felyfit.scout</string>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/lucy/Desktop/Claude Code/felyfit-kol-system</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/lucy/Desktop/Claude Code/felyfit-kol-system/.venv/bin/python</string>
+    <string>/Users/lucy/Desktop/Claude Code/felyfit-kol-system/scheduled_scout.py</string>
+    <string>--target</string>
+    <string>3</string>
+  </array>
+
+  <!-- Corre 3 veces al día: 9 AM, 1 PM, 7 PM (hora local del Mac). -->
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict>
+      <key>Hour</key><integer>9</integer>
+      <key>Minute</key><integer>0</integer>
+    </dict>
+    <dict>
+      <key>Hour</key><integer>13</integer>
+      <key>Minute</key><integer>0</integer>
+    </dict>
+    <dict>
+      <key>Hour</key><integer>19</integer>
+      <key>Minute</key><integer>0</integer>
+    </dict>
+  </array>
+
+  <!-- Si la Mac estaba dormida en el horario, corre al despertar. -->
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/lucy/Desktop/Claude Code/felyfit-kol-system/data/scheduled_scout.stdout.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/lucy/Desktop/Claude Code/felyfit-kol-system/data/scheduled_scout.stderr.log</string>
+
+  <!-- Asegura que el proceso tenga PATH normal para encontrar binarios. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
+  </dict>
+</dict>
+</plist>

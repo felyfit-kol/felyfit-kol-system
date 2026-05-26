@@ -1,0 +1,11 @@
+[theme]
+# FelyFit palette — blush / cream / rose
+base = "light"
+primaryColor = "#E5879A"           # rose principal (botones, sliders, active)
+backgroundColor = "#FBF4F2"        # cream background
+secondaryBackgroundColor = "#F5DDE0"  # blush card background
+textColor = "#3D2B30"              # dark plum text
+font = "serif"
+
+[server]
+headless = true

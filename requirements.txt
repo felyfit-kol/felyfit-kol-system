@@ -1,0 +1,16 @@
+# Core
+streamlit>=1.28.0
+pandas>=2.0.0
+python-dotenv>=1.0.0
+
+# Apify Instagram scrapers
+apify-client>=1.7.0
+
+# HTTP — Lark API + CF API
+httpx>=0.27.0
+
+# Image generation (lookup_infographic.py)
+Pillow>=10.0.0
+
+# Auth gate para multi-usuario en Streamlit Cloud
+streamlit-authenticator>=0.3.0
