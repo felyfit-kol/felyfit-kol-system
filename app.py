@@ -2137,6 +2137,11 @@ def page_collabs() -> None:
 def page_settings() -> None:
     st.header(":material/settings: The rules")
 
+    # Panel admin para códigos de acceso (solo visible si is_admin)
+    if auth.is_admin():
+        auth.admin_codes_panel()
+        st.divider()
+
     st.subheader("PR Pack — COGS estándar")
     st.metric("COGS (MXN)", f"${config.STANDARD_PR_PACK_COGS_MXN:.2f}")
     st.caption("Breakdown: empaque $69.80 + legging $150 + legging $200 + 3 calcetas $50")

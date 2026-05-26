@@ -265,6 +265,21 @@ CREATE INDEX IF NOT EXISTS idx_stories_felyfit ON story_snapshots(is_felyfit_men
 CREATE INDEX IF NOT EXISTS idx_stories_captured ON story_snapshots(captured_at DESC);
 
 
+-- Access codes — códigos temporales que la admin genera para dar acceso
+-- al dashboard sin compartir password fija.
+CREATE TABLE IF NOT EXISTS access_codes (
+    code         TEXT PRIMARY KEY,    -- 6 dígitos numéricos
+    generated_by TEXT NOT NULL,       -- admin username
+    generated_at TIMESTAMP DEFAULT (datetime('now')),
+    expires_at   TIMESTAMP NOT NULL,
+    used_at      TIMESTAMP,           -- NULL = no usado aún
+    used_by      TEXT,                -- nombre que tecleó al entrar
+    note         TEXT                 -- "Will para revisar pipeline"
+);
+
+CREATE INDEX IF NOT EXISTS idx_access_codes_expires ON access_codes(expires_at);
+
+
 -- Lookup history — cada vez que Lucy hace un lookup en Stalkear se guarda
 -- snapshot de métricas + recomendación de collab. Para retornar a comparar
 -- decisiones pasadas / ver cómo evolucionó la creadora.
