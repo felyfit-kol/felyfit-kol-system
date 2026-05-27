@@ -178,7 +178,7 @@ CREATE TABLE IF NOT EXISTS scout_runs (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     started_at          TIMESTAMP DEFAULT (datetime('now')),
     finished_at         TIMESTAMP,
-    source              TEXT,         -- hashtag / competitor_mentions / manual_list
+    source              TEXT,         -- hashtag / competitor_mentions / manual_list / seeds_relatedProfiles
     source_detail       TEXT,
     apify_actor         TEXT,
     apify_run_id        TEXT,
@@ -186,7 +186,12 @@ CREATE TABLE IF NOT EXISTS scout_runs (
     candidates_seen     INTEGER DEFAULT 0,
     candidates_new      INTEGER DEFAULT 0,
     status              TEXT DEFAULT 'running',  -- running / done / error
-    error               TEXT
+    error               TEXT,
+
+    -- Sessions: cuando un theme scout cascade por N hashtags, todos
+    -- los runs comparten session_id + session_label para agruparlos.
+    session_id          TEXT,
+    session_label       TEXT
 );
 
 
@@ -349,6 +354,8 @@ def init():
         _ensure_column(conn, "candidates", "gender", "TEXT")
         _ensure_column(conn, "candidates", "account_type", "TEXT")
         _ensure_column(conn, "candidates", "scout_run_id", "INTEGER")
+        _ensure_column(conn, "scout_runs", "session_id", "TEXT")
+        _ensure_column(conn, "scout_runs", "session_label", "TEXT")
 
     print(f"DB ready at {DB_PATH}")
 
