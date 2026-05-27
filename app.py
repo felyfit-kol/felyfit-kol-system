@@ -348,10 +348,20 @@ REJECT_REASONS = [
 # Helpers
 # ============================================================
 def fetch_df(sql: str, params: tuple = ()) -> pd.DataFrame:
-    with db.connect() as conn:
-        if params:
-            return pd.read_sql_query(sql, conn, params=params)
-        return pd.read_sql_query(sql, conn)
+    try:
+        with db.connect() as conn:
+            if params:
+                return pd.read_sql_query(sql, conn, params=params)
+            return pd.read_sql_query(sql, conn)
+    except Exception as e:
+        # Surface the real error message — Streamlit redacts by default.
+        st.error(f"❌ DB error: {type(e).__name__}: {e}")
+        with st.expander("SQL que falló"):
+            st.code(sql, language="sql")
+            if params:
+                st.code(f"params = {params}")
+        # Re-raise para que el caller también vea el problema
+        raise
 
 
 def _normalize_for_dup(s: str) -> str:
