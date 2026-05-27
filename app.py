@@ -2160,15 +2160,25 @@ def _collab_create_form() -> None:
         st.info("No hay candidatas elegibles. Aprueba o contacta a alguna primero.")
         return
 
+    # Pre-construir labels robusto a NaN/None
+    def _opt_label(h: str) -> str:
+        row = eligible[eligible["handle"] == h]
+        if row.empty:
+            return f"@{h}"
+        tier_v = row["tier"].iloc[0]
+        tier_s = tier_v if isinstance(tier_v, str) and tier_v else "?"
+        foll_v = row["followers"].iloc[0]
+        try:
+            foll_n = int(foll_v) if pd.notna(foll_v) else 0
+        except (ValueError, TypeError):
+            foll_n = 0
+        return f"@{h} ({tier_s} · {foll_n:,}f)"
+
     with st.form("new_collab_form", clear_on_submit=True):
         st.markdown("**Quién + Campaña**")
         c1, c2 = st.columns([2, 2])
         handle_opts = eligible["handle"].tolist()
-        handle = c1.selectbox(
-            "Creadora", handle_opts,
-            format_func=lambda h: f"@{h} ({eligible[eligible['handle']==h]['tier'].iloc[0] or '?'} · "
-                                   f"{int(eligible[eligible['handle']==h]['followers'].iloc[0] or 0):,}f)",
-        )
+        handle = c1.selectbox("Creadora", handle_opts, format_func=_opt_label)
         campaign_name = c2.text_input("Campaña", placeholder="ej. Verano 2026, Community Spotlight, etc.",
                                        help="Si varias creadoras participan en la misma campaña, usen el MISMO nombre.")
 
