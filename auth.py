@@ -70,10 +70,13 @@ def _verify(token: str) -> Optional[dict]:
         return None
 
 
-# Cookie manager — single instance per page render
+# Cookie manager — un SOLO instance por sesión cacheado en session_state.
+# Crear múltiples instances pierde state y nunca encuentra las cookies.
 def _cookies():
     import extra_streamlit_components as stx
-    return stx.CookieManager(key="ff_cookie_mgr")
+    if "_cookie_mgr" not in st.session_state:
+        st.session_state._cookie_mgr = stx.CookieManager(key="ff_cookie_mgr")
+    return st.session_state._cookie_mgr
 
 
 def _save_session_cookie(user: str, name: str, is_admin: bool) -> None:
@@ -103,9 +106,15 @@ def _clear_session_cookie() -> None:
 
 
 def _try_restore_from_cookie() -> bool:
-    """Si hay cookie válida, restaurar session_state."""
+    """Si hay cookie válida, restaurar session_state.
+    Forzar carga inicial con get_all() para evitar el bug de CookieManager
+    que devuelve None en el primer get() antes de sincronizar con el browser."""
     try:
-        token = _cookies().get(COOKIE_KEY)
+        mgr = _cookies()
+        # get_all() fuerza al componente a leer todas las cookies del browser.
+        # Es crucial: sin esto, el primer get() retorna None aunque la cookie exista.
+        all_cookies = mgr.get_all()
+        token = (all_cookies or {}).get(COOKIE_KEY) or mgr.get(COOKIE_KEY)
     except Exception:
         return False
     if not token:

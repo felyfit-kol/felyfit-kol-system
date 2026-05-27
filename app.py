@@ -364,9 +364,9 @@ def fetch_df(sql: str, params: tuple = ()) -> pd.DataFrame:
         raise
 
 
-def _normalize_for_dup(s: str) -> str:
-    """Para comparar handles/nombres ignorando ruido."""
-    if not s:
+def _normalize_for_dup(s) -> str:
+    """Para comparar handles/nombres ignorando ruido. Robusto a None/NaN."""
+    if not s or not isinstance(s, str):
         return ""
     return "".join(c for c in s.lower() if c.isalnum())
 
