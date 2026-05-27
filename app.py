@@ -2142,6 +2142,40 @@ def page_settings() -> None:
         auth.admin_codes_panel()
         st.divider()
 
+        # Panel de sincronización con Lark — útil cuando el filesystem
+        # de Streamlit Cloud se resetea o cuando queremos forzar reimport.
+        with st.container(border=True):
+            st.subheader(":material/sync: Sincronización Lark CRM")
+            with db.connect() as conn:
+                n_total = conn.execute("SELECT COUNT(*) FROM candidates").fetchone()[0]
+                n_lark = conn.execute(
+                    "SELECT COUNT(*) FROM candidates WHERE source='lark_import'"
+                ).fetchone()[0]
+            cs1, cs2 = st.columns(2)
+            cs1.metric("Total en DB local", n_total)
+            cs2.metric("Importadas de Lark", n_lark)
+            st.caption(
+                "Lark CRM es la fuente de verdad. Si la DB local está vacía "
+                "(post-deploy), usa este botón para rehidratar."
+            )
+            if st.button(":material/cloud_download: Importar/Resincronizar desde Lark",
+                         type="primary", use_container_width=True):
+                try:
+                    import lark_sync
+                    with st.spinner("Trayendo registros de Lark…"):
+                        result = lark_sync.import_existing_creadoras_from_lark()
+                    st.success(
+                        f"✓ Pulled {result.get('pulled', 0)} registros · "
+                        f"nuevos en local: {result.get('new_in_local', 0)}"
+                    )
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Error: {type(e).__name__}: {e}")
+                    import traceback
+                    with st.expander("Traceback completo"):
+                        st.code(traceback.format_exc())
+        st.divider()
+
     st.subheader("PR Pack — COGS estándar")
     st.metric("COGS (MXN)", f"${config.STANDARD_PR_PACK_COGS_MXN:.2f}")
     st.caption("Breakdown: empaque $69.80 + legging $150 + legging $200 + 3 calcetas $50")
