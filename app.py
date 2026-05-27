@@ -29,8 +29,9 @@ import scoring
 
 # Helper para convertir path local de foto -> data URI base64
 # (Streamlit ImageColumn no soporta paths locales, solo URLs/data URIs)
-def _to_image_src(path_or_url: Optional[str]) -> Optional[str]:
-    if not path_or_url:
+def _to_image_src(path_or_url) -> Optional[str]:
+    # Robusto a non-string inputs (pandas puede pasar NaN float en columnas nulas)
+    if not path_or_url or not isinstance(path_or_url, str):
         return None
     if path_or_url.startswith("http"):
         return path_or_url
