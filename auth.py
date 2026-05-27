@@ -70,13 +70,13 @@ def _verify(token: str) -> Optional[dict]:
         return None
 
 
-# Cookie manager — un SOLO instance por sesión cacheado en session_state.
-# Crear múltiples instances pierde state y nunca encuentra las cookies.
+# Cookie controller — librería más estable que extra-streamlit-components.
+# Una sola instance cacheada en session_state.
 def _cookies():
-    import extra_streamlit_components as stx
-    if "_cookie_mgr" not in st.session_state:
-        st.session_state._cookie_mgr = stx.CookieManager(key="ff_cookie_mgr")
-    return st.session_state._cookie_mgr
+    from streamlit_cookies_controller import CookieController
+    if "_cookie_ctrl" not in st.session_state:
+        st.session_state._cookie_ctrl = CookieController()
+    return st.session_state._cookie_ctrl
 
 
 def _save_session_cookie(user: str, name: str, is_admin: bool) -> None:
@@ -89,32 +89,22 @@ def _save_session_cookie(user: str, name: str, is_admin: bool) -> None:
     }
     token = _sign(payload)
     try:
-        _cookies().set(
-            COOKIE_KEY, token,
-            expires_at=datetime.now() + timedelta(days=SESSION_DAYS),
-            key=f"set_{int(time.time())}",
-        )
+        _cookies().set(COOKIE_KEY, token, max_age=SESSION_DAYS * 86400)
     except Exception:
-        pass  # cookie set is best-effort; session state still works
+        pass
 
 
 def _clear_session_cookie() -> None:
     try:
-        _cookies().delete(COOKIE_KEY, key=f"del_{int(time.time())}")
+        _cookies().remove(COOKIE_KEY)
     except Exception:
         pass
 
 
 def _try_restore_from_cookie() -> bool:
-    """Si hay cookie válida, restaurar session_state.
-    Forzar carga inicial con get_all() para evitar el bug de CookieManager
-    que devuelve None en el primer get() antes de sincronizar con el browser."""
+    """Si hay cookie válida, restaurar session_state."""
     try:
-        mgr = _cookies()
-        # get_all() fuerza al componente a leer todas las cookies del browser.
-        # Es crucial: sin esto, el primer get() retorna None aunque la cookie exista.
-        all_cookies = mgr.get_all()
-        token = (all_cookies or {}).get(COOKIE_KEY) or mgr.get(COOKIE_KEY)
+        token = _cookies().get(COOKIE_KEY)
     except Exception:
         return False
     if not token:
