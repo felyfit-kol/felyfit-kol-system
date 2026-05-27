@@ -70,16 +70,13 @@ def _verify(token: str) -> Optional[dict]:
         return None
 
 
-# Cookie controller — librería más estable que extra-streamlit-components.
-# Una sola instance cacheada en session_state.
-def _cookies():
-    from streamlit_cookies_controller import CookieController
-    if "_cookie_ctrl" not in st.session_state:
-        st.session_state._cookie_ctrl = CookieController()
-    return st.session_state._cookie_ctrl
+# Token persistence via URL query params — 100% deterministic, no external libs.
+# Trade-off: el token queda visible en la URL. Lucy puede bookmarkear esa URL
+# y entrar desde ese bookmark sin re-loguearse por 30 días.
+QUERY_TOKEN_KEY = "s"
 
 
-def _save_session_cookie(user: str, name: str, is_admin: bool) -> None:
+def _save_session_token(user: str, name: str, is_admin: bool) -> None:
     payload = {
         "user": user,
         "name": name,
@@ -89,28 +86,31 @@ def _save_session_cookie(user: str, name: str, is_admin: bool) -> None:
     }
     token = _sign(payload)
     try:
-        _cookies().set(COOKIE_KEY, token, max_age=SESSION_DAYS * 86400)
+        st.query_params[QUERY_TOKEN_KEY] = token
     except Exception:
         pass
 
 
-def _clear_session_cookie() -> None:
+def _clear_session_token() -> None:
     try:
-        _cookies().remove(COOKIE_KEY)
+        if QUERY_TOKEN_KEY in st.query_params:
+            del st.query_params[QUERY_TOKEN_KEY]
     except Exception:
         pass
 
 
-def _try_restore_from_cookie() -> bool:
-    """Si hay cookie válida, restaurar session_state."""
+def _try_restore_from_url() -> bool:
+    """Si hay token válido en la URL (?s=...), restaurar session_state."""
     try:
-        token = _cookies().get(COOKIE_KEY)
+        token = st.query_params.get(QUERY_TOKEN_KEY)
     except Exception:
         return False
     if not token:
         return False
     payload = _verify(token)
     if not payload:
+        # Token corrupto/expirado — limpia el query param para evitar loops
+        _clear_session_token()
         return False
     st.session_state._auth_ok = True
     st.session_state._auth_user = payload.get("user")
@@ -218,7 +218,7 @@ def gate() -> bool:
         return True
 
     # Intentar restaurar de cookie (session sobrevive sleep de Streamlit Cloud)
-    if _try_restore_from_cookie():
+    if _try_restore_from_url():
         return True
 
     # Render login
@@ -277,7 +277,7 @@ def gate() -> bool:
                 st.session_state._auth_user = name.strip().lower()
                 st.session_state._auth_name = name.strip()
                 st.session_state._auth_is_admin = False
-                _save_session_cookie(name.strip().lower(), name.strip(), False)
+                _save_session_token(name.strip().lower(), name.strip(), False)
                 st.rerun()
             else:
                 st.error("Código inválido, expirado o ya usado.")
@@ -297,7 +297,7 @@ def gate() -> bool:
                 st.session_state._auth_user = username.strip().lower()
                 st.session_state._auth_name = friendly
                 st.session_state._auth_is_admin = True
-                _save_session_cookie(username.strip().lower(), friendly, True)
+                _save_session_token(username.strip().lower(), friendly, True)
                 st.rerun()
             else:
                 st.error("Usuario o contraseña incorrectos.")
@@ -323,7 +323,7 @@ def logout_button() -> None:
         for k in list(st.session_state.keys()):
             if k.startswith("_auth") or k == "last_lookup":
                 del st.session_state[k]
-        _clear_session_cookie()
+        _clear_session_token()
         st.rerun()
 
 
