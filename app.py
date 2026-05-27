@@ -2395,6 +2395,10 @@ _Y2K_FLOWER = '<svg class="ff-star" viewBox="0 0 24 24" fill="currentColor"><pat
 
 
 def main() -> None:
+    # Inicializa DB si no existe (caso típico: primer deploy en Streamlit Cloud).
+    # Operación idempotente — solo crea tablas si faltan.
+    db.init()
+
     # Auth gate — solo se activa si hay usuarios configurados en
     # .streamlit/secrets.toml. En dev local sin secrets, pasa libre.
     if not auth.gate():
