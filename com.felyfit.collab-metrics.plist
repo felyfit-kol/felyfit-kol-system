@@ -14,11 +14,14 @@
     <string>/Users/lucy/Desktop/Claude Code/felyfit-kol-system/scheduled_metrics_refresh.py</string>
   </array>
 
-  <!-- Corre 1 vez al día a las 9 AM (hora local del Mac) -->
+  <!-- Corre 1 vez al día a las 11:00 AM (hora local del Mac).
+       Si la Mac está apagada/dormida, ese día se skipea — Lucy puede
+       usar el botón "Actualizar todas las collabs activas ahora" en
+       Settings para hacer catch-up manual los lunes. -->
   <key>StartCalendarInterval</key>
   <dict>
-    <key>Hour</key><integer>9</integer>
-    <key>Minute</key><integer>15</integer>
+    <key>Hour</key><integer>11</integer>
+    <key>Minute</key><integer>0</integer>
   </dict>
 
   <key>RunAtLoad</key>

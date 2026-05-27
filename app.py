@@ -2703,6 +2703,82 @@ def page_settings() -> None:
                         st.code(traceback.format_exc())
         st.divider()
 
+        # Panel: actualizar TODAS las collabs activas en un click
+        # (catch-up manual cuando la Mac estuvo apagada el fin de semana)
+        with st.container(border=True):
+            st.subheader(":material/update: Refresh manual de Collabs")
+            active = fetch_df("""
+                SELECT c.id, c.handle, c.campaign_name,
+                       (SELECT COUNT(*) FROM collab_posts cp WHERE cp.collab_id = c.id) AS n_posts
+                FROM collabs c WHERE c.status = 'posted'
+            """)
+            n_collabs = len(active)
+            n_total_posts = int(active["n_posts"].sum()) if not active.empty else 0
+            cs1, cs2 = st.columns(2)
+            cs1.metric("Collabs en tracking", n_collabs)
+            cs2.metric("Posts a scrapear", n_total_posts)
+            est_cost = n_total_posts * 0.003
+            st.caption(
+                f"Costo estimado: ~${est_cost:.3f} USD · "
+                f"tiempo estimado: ~{n_total_posts * 5}s. "
+                "Útil después del fin de semana si la Mac estuvo apagada."
+            )
+            if n_collabs == 0:
+                st.info("No hay collabs activas para refrescar.")
+            else:
+                if st.button(
+                    ":material/sync: Actualizar TODAS las collabs activas",
+                    type="primary", use_container_width=True,
+                    key="refresh_all_collabs_btn",
+                ):
+                    with st.status(
+                        f"Procesando {n_collabs} collab(s)…", expanded=True
+                    ) as sb:
+                        ok = 0
+                        errs = 0
+                        for _, row in active.iterrows():
+                            cid = int(row["id"])
+                            handle = row["handle"]
+                            sb.write(f"**Collab #{cid}** · @{handle} · "
+                                      f"'{row['campaign_name']}'")
+                            posts = fetch_df(
+                                "SELECT post_url FROM collab_posts WHERE collab_id=?",
+                                (cid,),
+                            )
+                            if posts.empty:
+                                sb.write("  (sin posts vinculados — skip)")
+                                continue
+                            for _, p in posts.iterrows():
+                                url = p["post_url"]
+                                try:
+                                    res = apify_jobs.snapshot_collab_post(cid, url)
+                                    if res.get("error"):
+                                        sb.write(f"  ❌ {url[:60]}…: {res['error']}")
+                                        errs += 1
+                                    else:
+                                        sb.write(
+                                            f"  ✓ {url[:60]}… "
+                                            f"{int(res['likes']):,}L · "
+                                            f"{int(res['comments']):,}C · "
+                                            f"{int(res['views']):,}V"
+                                        )
+                                        with db.connect() as conn:
+                                            conn.execute(
+                                                "UPDATE collab_posts SET last_scraped_at=? "
+                                                "WHERE collab_id=? AND post_url=?",
+                                                (datetime.now().isoformat(timespec="seconds"),
+                                                 cid, url),
+                                            )
+                                        ok += 1
+                                except Exception as e:
+                                    sb.write(f"  ❌ {url[:60]}…: {e}")
+                                    errs += 1
+                        sb.update(
+                            label=f"✅ {ok} snapshots OK · {errs} errores",
+                            state="complete", expanded=True,
+                        )
+        st.divider()
+
     st.subheader("PR Pack — COGS estándar")
     st.metric("COGS (MXN)", f"${config.STANDARD_PR_PACK_COGS_MXN:.2f}")
     st.caption("Breakdown: empaque $69.80 + legging $150 + legging $200 + 3 calcetas $50")
