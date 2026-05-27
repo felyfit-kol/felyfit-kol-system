@@ -1,10 +1,15 @@
-"""Auth gate con dos rutas:
+"""Auth gate con sesiones persistentes (cookies HMAC-firmadas).
 
+Dos rutas de login:
 1. **Admin login** (user + password) — definido en st.secrets[auth.users].
    Los admins pueden generar códigos para dar acceso a otros.
+2. **Código de acceso** (6 dígitos) — generado por la admin desde el panel.
 
-2. **Código de acceso** (6 dígitos) — generado por la admin desde el panel,
-   válido N horas, 1 uso. La persona teclea su nombre + código y entra.
+La sesión persiste 30 días via cookie firmada. Sobrevive:
+- Sleep de Streamlit Cloud (tras 7 días sin actividad la app duerme)
+- Cerrar el browser
+- Reloads
+- Cold starts
 
 Uso en app.py:
     import auth
@@ -13,8 +18,11 @@ Uso en app.py:
 """
 from __future__ import annotations
 
+import hashlib
 import hmac
+import json
 import random
+import time
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -22,12 +30,100 @@ import streamlit as st
 
 import db
 
+# ============================================================
+# Cookie config
+# ============================================================
+COOKIE_KEY = "felyfit_kol_session"
+SESSION_DAYS = 30  # auth sobrevive 30 días
+
+
+def _cookie_secret() -> str:
+    """Lee el secret para firmar cookies. Usa st.secrets[auth][secret] o
+    cae a un default WARNING (solo para dev). En producción configurar."""
+    try:
+        return str(st.secrets["auth"]["secret"])
+    except (KeyError, FileNotFoundError, AttributeError):
+        return "felyfit-default-secret-CHANGE-ME-in-secrets-toml"
+
+
+def _sign(payload: dict) -> str:
+    body = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    sig = hmac.new(_cookie_secret().encode(), body.encode(),
+                    hashlib.sha256).hexdigest()
+    return f"{body}|{sig}"
+
+
+def _verify(token: str) -> Optional[dict]:
+    if not token or "|" not in token:
+        return None
+    try:
+        body, sig = token.rsplit("|", 1)
+        expected = hmac.new(_cookie_secret().encode(), body.encode(),
+                             hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(sig, expected):
+            return None
+        payload = json.loads(body)
+        if payload.get("exp", 0) < time.time():
+            return None
+        return payload
+    except Exception:
+        return None
+
+
+# Cookie manager — single instance per page render
+def _cookies():
+    import extra_streamlit_components as stx
+    return stx.CookieManager(key="ff_cookie_mgr")
+
+
+def _save_session_cookie(user: str, name: str, is_admin: bool) -> None:
+    payload = {
+        "user": user,
+        "name": name,
+        "is_admin": bool(is_admin),
+        "iat": int(time.time()),
+        "exp": int(time.time()) + SESSION_DAYS * 86400,
+    }
+    token = _sign(payload)
+    try:
+        _cookies().set(
+            COOKIE_KEY, token,
+            expires_at=datetime.now() + timedelta(days=SESSION_DAYS),
+            key=f"set_{int(time.time())}",
+        )
+    except Exception:
+        pass  # cookie set is best-effort; session state still works
+
+
+def _clear_session_cookie() -> None:
+    try:
+        _cookies().delete(COOKIE_KEY, key=f"del_{int(time.time())}")
+    except Exception:
+        pass
+
+
+def _try_restore_from_cookie() -> bool:
+    """Si hay cookie válida, restaurar session_state."""
+    try:
+        token = _cookies().get(COOKIE_KEY)
+    except Exception:
+        return False
+    if not token:
+        return False
+    payload = _verify(token)
+    if not payload:
+        return False
+    st.session_state._auth_ok = True
+    st.session_state._auth_user = payload.get("user")
+    st.session_state._auth_name = payload.get("name")
+    st.session_state._auth_is_admin = bool(payload.get("is_admin"))
+    return True
+
 
 # ============================================================
 # Admin login (user + password desde secrets)
 # ============================================================
 def _users_from_secrets() -> dict:
-    """Lee usuarios admin de st.secrets['auth']['users']. {} si no existe."""
     try:
         return dict(st.secrets["auth"]["users"])
     except (KeyError, FileNotFoundError, AttributeError):
@@ -35,7 +131,6 @@ def _users_from_secrets() -> dict:
 
 
 def _check_admin(username: str, password: str, users: dict) -> Optional[str]:
-    """Devuelve nombre amigable si admin credentials matchean."""
     if username not in users:
         return None
     expected = str(users[username].get("password", ""))
@@ -49,7 +144,6 @@ def _check_admin(username: str, password: str, users: dict) -> Optional[str]:
 # ============================================================
 def generate_access_code(*, generated_by: str, hours_valid: int = 24,
                           note: str = "") -> str:
-    """Genera código de 6 dígitos único, lo guarda en DB."""
     for _ in range(20):
         code = "".join(random.choices("0123456789", k=6))
         with db.connect() as conn:
@@ -67,11 +161,10 @@ def generate_access_code(*, generated_by: str, hours_valid: int = 24,
                 (code, generated_by, expires, note),
             )
             return code
-    raise RuntimeError("No se pudo generar código único después de 20 intentos")
+    raise RuntimeError("No se pudo generar código único")
 
 
 def consume_code(code: str, used_by: str) -> bool:
-    """Valida + marca como usado. True si pudo consumirse."""
     code = code.strip()
     if not code.isdigit() or len(code) != 6:
         return False
@@ -80,11 +173,7 @@ def consume_code(code: str, used_by: str) -> bool:
         row = conn.execute(
             "SELECT expires_at, used_at FROM access_codes WHERE code=?", (code,)
         ).fetchone()
-        if not row:
-            return False
-        if row["used_at"]:
-            return False
-        if row["expires_at"] < now_iso:
+        if not row or row["used_at"] or row["expires_at"] < now_iso:
             return False
         conn.execute(
             "UPDATE access_codes SET used_at=?, used_by=? WHERE code=?",
@@ -94,13 +183,11 @@ def consume_code(code: str, used_by: str) -> bool:
 
 
 def list_active_codes() -> list:
-    """Códigos válidos no usados (para el panel admin)."""
     now_iso = datetime.now().isoformat(timespec="seconds")
     with db.connect() as conn:
         rows = conn.execute(
             "SELECT code, generated_by, generated_at, expires_at, note "
-            "FROM access_codes "
-            "WHERE used_at IS NULL AND expires_at > ? "
+            "FROM access_codes WHERE used_at IS NULL AND expires_at > ? "
             "ORDER BY generated_at DESC",
             (now_iso,),
         ).fetchall()
@@ -108,7 +195,6 @@ def list_active_codes() -> list:
 
 
 def list_recent_uses(limit: int = 20) -> list:
-    """Últimos códigos usados (historial)."""
     with db.connect() as conn:
         rows = conn.execute(
             "SELECT code, used_by, used_at, note FROM access_codes "
@@ -122,17 +208,21 @@ def list_recent_uses(limit: int = 20) -> list:
 # Gate principal
 # ============================================================
 def gate() -> bool:
-    """Pantalla de login. Devuelve True si autenticado."""
     users = _users_from_secrets()
 
     # Sin usuarios admin configurados → acceso libre (dev local)
     if not users:
         return True
 
+    # Ya autenticado en esta sesión
     if st.session_state.get("_auth_ok"):
         return True
 
-    # Branding
+    # Intentar restaurar de cookie (session sobrevive sleep de Streamlit Cloud)
+    if _try_restore_from_cookie():
+        return True
+
+    # Render login
     st.markdown(
         """
         <style>
@@ -148,18 +238,14 @@ def gate() -> bool:
           }
           .ff-login-logo {
             font-family: 'Bowlby One', sans-serif;
-            font-size: 3rem;
-            color: #722F37;
+            font-size: 3rem; color: #722F37;
             text-transform: lowercase;
-            line-height: 1;
-            margin-bottom: 0.3rem;
+            line-height: 1; margin-bottom: 0.3rem;
           }
           .ff-login-tag {
             font-family: 'Quicksand', sans-serif;
-            font-weight: 600;
-            font-size: 0.7rem;
-            color: #E5879A;
-            letter-spacing: 0.28em;
+            font-weight: 600; font-size: 0.7rem;
+            color: #E5879A; letter-spacing: 0.28em;
             text-transform: uppercase;
           }
         </style>
@@ -176,8 +262,9 @@ def gate() -> bool:
 
     with tab_code:
         st.markdown("**Para usuarios del equipo**")
-        st.caption("Pide tu código a Lucy. Se vence 24h después de generado.")
-        with st.form("code_form", clear_on_submit=False):
+        st.caption("Pide tu código a Lucy. Se vence 24h después de generado. "
+                    "Tu sesión queda activa 30 días.")
+        with st.form("code_form"):
             name = st.text_input("Tu nombre", placeholder="ej. Will, Karen…")
             code = st.text_input("Código (6 dígitos)", max_chars=6,
                                   placeholder="000000")
@@ -191,13 +278,15 @@ def gate() -> bool:
                 st.session_state._auth_user = name.strip().lower()
                 st.session_state._auth_name = name.strip()
                 st.session_state._auth_is_admin = False
+                _save_session_cookie(name.strip().lower(), name.strip(), False)
                 st.rerun()
             else:
                 st.error("Código inválido, expirado o ya usado.")
 
     with tab_admin:
         st.markdown("**Solo para administradoras**")
-        with st.form("admin_form", clear_on_submit=False):
+        st.caption("Tu sesión queda activa 30 días — no tendrás que loggearte de nuevo.")
+        with st.form("admin_form"):
             username = st.text_input("Usuario admin", placeholder="lucy")
             password = st.text_input("Contraseña", type="password")
             submit_a = st.form_submit_button("Entrar como admin", type="primary",
@@ -209,6 +298,7 @@ def gate() -> bool:
                 st.session_state._auth_user = username.strip().lower()
                 st.session_state._auth_name = friendly
                 st.session_state._auth_is_admin = True
+                _save_session_cookie(username.strip().lower(), friendly, True)
                 st.rerun()
             else:
                 st.error("Usuario o contraseña incorrectos.")
@@ -232,22 +322,22 @@ def logout_button() -> None:
     st.sidebar.caption(f"Sesión: **{name}** · _{role}_")
     if st.sidebar.button("Cerrar sesión", use_container_width=True):
         for k in list(st.session_state.keys()):
-            if k.startswith("_auth"):
+            if k.startswith("_auth") or k == "last_lookup":
                 del st.session_state[k]
+        _clear_session_cookie()
         st.rerun()
 
 
 def admin_codes_panel() -> None:
-    """Panel admin para generar + ver códigos. Solo se renderiza si is_admin()."""
     if not is_admin():
         st.warning("Solo administradoras pueden ver este panel.")
         return
 
     st.header(":material/key: Códigos de acceso")
     st.caption(
-        "Genera un código de 6 dígitos para dar acceso al dashboard "
-        "a alguien del equipo (Will, Karen, asistente, etc.). "
-        "Comparte el código por WhatsApp / Slack. Vence en 24h y es de 1 solo uso."
+        "Genera un código de 6 dígitos para dar acceso al dashboard. "
+        "Comparte por WhatsApp / Slack. Vence en 24h y es de 1 solo uso. "
+        "La persona queda logueada 30 días después de entrar."
     )
 
     with st.container(border=True):
@@ -285,11 +375,8 @@ def admin_codes_panel() -> None:
             cols = st.columns([1, 2, 2, 1])
             cols[0].code(c["code"])
             cols[1].markdown(f"_{c['note'] or '(sin nota)'}_")
-            cols[2].caption(
-                f"Generado: {c['generated_at']} · Vence: {c['expires_at']}"
-            )
-            if cols[3].button("Revocar", key=f"rev_{c['code']}",
-                               help="Marca como usado para invalidarlo"):
+            cols[2].caption(f"Generado: {c['generated_at']} · Vence: {c['expires_at']}")
+            if cols[3].button("Revocar", key=f"rev_{c['code']}"):
                 consume_code(c["code"], f"REVOKED_by_{current_user()}")
                 st.rerun()
 

@@ -14,3 +14,6 @@ Pillow>=10.0.0
 
 # Auth gate para multi-usuario en Streamlit Cloud
 streamlit-authenticator>=0.3.0
+
+# Cookies firmadas para session persistente entre sleeps de Streamlit Cloud
+extra-streamlit-components>=0.1.71
