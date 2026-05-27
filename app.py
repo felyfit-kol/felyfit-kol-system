@@ -2394,10 +2394,38 @@ _Y2K_BURST = '<svg class="ff-star" viewBox="0 0 24 24" fill="currentColor"><path
 _Y2K_FLOWER = '<svg class="ff-star" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2 C 14,2 16,4 16,6 C 18,6 20,8 20,10 C 22,10 22,12 22,14 C 22,16 20,18 18,18 C 18,20 16,22 14,22 C 12,22 10,20 10,18 C 8,18 6,16 6,14 C 4,14 2,12 2,10 C 2,8 4,6 6,6 C 6,4 8,2 10,2 Z"/></svg>'
 
 
+def _ensure_seeded_from_lark() -> None:
+    """Si la tabla candidates está vacía (primer deploy en Streamlit Cloud,
+    o filesystem reseteado), importa las creadoras existentes desde Lark.
+    Lark es la source of truth — SQLite es solo caché operativa."""
+    with db.connect() as conn:
+        count = conn.execute("SELECT COUNT(*) FROM candidates").fetchone()[0]
+    if count > 0:
+        return
+    try:
+        import lark_sync
+        with st.spinner("Primera ejecución — sincronizando con Lark CRM…"):
+            result = lark_sync.import_existing_creadoras_from_lark()
+        n = result.get("new_in_local", 0)
+        if n:
+            st.success(f"✓ Importadas {n} creadoras de Lark — el dashboard ya tiene tu data.")
+        else:
+            st.info("Lark CRM está vacío todavía. Corre un scout para empezar.")
+    except Exception as e:
+        st.warning(
+            f"⚠️ No pude importar de Lark al arranque: {e}. "
+            "Puedes continuar — la DB local se llenará con scouts nuevos."
+        )
+
+
 def main() -> None:
     # Inicializa DB si no existe (caso típico: primer deploy en Streamlit Cloud).
     # Operación idempotente — solo crea tablas si faltan.
     db.init()
+
+    # Si DB recién creada (filesystem efímero de Streamlit Cloud reset el data),
+    # rehidratar desde Lark CRM que es source of truth.
+    _ensure_seeded_from_lark()
 
     # Auth gate — solo se activa si hay usuarios configurados en
     # .streamlit/secrets.toml. En dev local sin secrets, pasa libre.
