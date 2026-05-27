@@ -2300,6 +2300,75 @@ def _collab_list_render(statuses: List[str], queue_key: str) -> None:
         _collab_card(c.to_dict(), queue_key)
 
 
+def _collab_evolution_chart(c: dict) -> None:
+    """Renderiza chart time-series del progreso de la collab.
+    Para cada día con snapshots, suma likes/comments/views agregados de todos
+    los posts vinculados (último snapshot del día). Calcula EMV acumulado."""
+    cid = c["id"]
+    snaps = fetch_df("""
+        SELECT post_url, captured_at, likes, comments, saves, shares, views
+        FROM collab_post_snapshots
+        WHERE collab_id = ?
+        ORDER BY captured_at
+    """, (cid,))
+
+    if snaps.empty:
+        return  # aún no hay data para graficar
+
+    st.markdown("**📈 Evolución diaria**")
+
+    # Normalizar día (YYYY-MM-DD)
+    snaps["day"] = pd.to_datetime(snaps["captured_at"]).dt.date.astype(str)
+
+    # Para cada (día, post_url), tomar el snapshot MÁS RECIENTE.
+    # Después sumar por día para tener métricas agregadas de la collab ese día.
+    snaps_latest = (
+        snaps.sort_values("captured_at")
+             .groupby(["day", "post_url"])
+             .last()
+             .reset_index()
+    )
+    daily = snaps_latest.groupby("day").agg(
+        likes=("likes", "sum"),
+        comments=("comments", "sum"),
+        saves=("saves", "sum"),
+        shares=("shares", "sum"),
+        views=("views", "sum"),
+    ).reset_index()
+
+    # Calcular EMV acumulado por día usando los multipliers de config
+    mult = config.EMV_MULTIPLIERS
+    daily["EMV"] = (
+        daily["likes"].fillna(0) * mult.get("like_mxn", 0.30) +
+        daily["comments"].fillna(0) * mult.get("comment_mxn", 3.0) +
+        daily["saves"].fillna(0) * mult.get("save_mxn", 5.0) +
+        daily["shares"].fillna(0) * mult.get("share_mxn", 6.0) +
+        daily["views"].fillna(0) * mult.get("view_mxn", 0.05)
+    )
+
+    # Chart de EMV vs proyectado
+    exp_emv = float(c.get("expected_emv") or 0)
+    chart_df = daily.set_index("day")[["EMV"]].copy()
+    chart_df["EMV proyectado"] = exp_emv
+
+    st.line_chart(chart_df, height=240, use_container_width=True)
+    st.caption(
+        f"📊 Última fila: {daily.iloc[-1]['day']} · "
+        f"EMV ${daily.iloc[-1]['EMV']:,.0f} · "
+        f"{int(daily.iloc[-1]['likes']):,} likes · "
+        f"{int(daily.iloc[-1]['comments']):,} comments · "
+        f"{int(daily.iloc[-1]['views']):,} views"
+    )
+
+    # Tabla compacta de breakdown diario (collapsible)
+    with st.expander("Ver tabla diaria"):
+        display_df = daily.copy()
+        for col in ("likes", "comments", "saves", "shares", "views"):
+            display_df[col] = display_df[col].fillna(0).astype(int)
+        display_df["EMV"] = display_df["EMV"].fillna(0).astype(int)
+        st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+
 def _collab_card(c: dict, queue_key: str) -> None:
     """Card expandible de UNA collab."""
     status_label = COLLAB_STATUS_LABELS.get(c["status"], c["status"])
@@ -2367,6 +2436,9 @@ def _collab_card(c: dict, queue_key: str) -> None:
                 st.caption("📦 Contenido acordado: " + " + ".join(pieces))
         except Exception:
             pass
+
+        # Time-series chart: evolución diaria del tracking
+        _collab_evolution_chart(c)
 
         # Posts vinculados
         st.markdown("**Posts vinculados**")
