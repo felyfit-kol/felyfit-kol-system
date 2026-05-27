@@ -2468,12 +2468,12 @@ def main() -> None:
 
     st.sidebar.markdown(_logo_html(), unsafe_allow_html=True)
 
-    # Permite navegación programática (set session_state.active_page + rerun)
+    # Usar key= directamente para que Streamlit dueñe el state del radio.
+    # Esto evita el bug de "doble click" que pasa cuando se usa index= con
+    # session_state manual (race condition entre el widget y el state).
     if "active_page" not in st.session_state:
         st.session_state.active_page = PAGES[0]
-    default_idx = PAGES.index(st.session_state.active_page) if st.session_state.active_page in PAGES else 0
-    page = st.sidebar.radio("Página", PAGES, index=default_idx)
-    st.session_state.active_page = page
+    page = st.sidebar.radio("Página", PAGES, key="active_page")
 
     st.sidebar.divider()
     auth.logout_button()
