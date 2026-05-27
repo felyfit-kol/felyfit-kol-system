@@ -158,6 +158,22 @@ CREATE INDEX IF NOT EXISTS idx_collabs_handle ON collabs(handle);
 CREATE INDEX IF NOT EXISTS idx_collabs_status ON collabs(status);
 
 
+-- Posts asociados a una collab. Una collab puede tener N posts/reels/carousels.
+-- Cada uno se trackea independientemente (snapshot diario via collab_post_snapshots).
+CREATE TABLE IF NOT EXISTS collab_posts (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    collab_id       INTEGER NOT NULL REFERENCES collabs(id),
+    post_url        TEXT NOT NULL,
+    post_type       TEXT,         -- reel / post / carousel / live
+    posted_at       TIMESTAMP,    -- fecha real de publicación
+    added_at        TIMESTAMP DEFAULT (datetime('now')),
+    last_scraped_at TIMESTAMP,
+    UNIQUE(collab_id, post_url)
+);
+
+CREATE INDEX IF NOT EXISTS idx_collab_posts_collab ON collab_posts(collab_id);
+
+
 -- Snapshots diarios de cada post de collab (para tracking time-series)
 CREATE TABLE IF NOT EXISTS collab_post_snapshots (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,

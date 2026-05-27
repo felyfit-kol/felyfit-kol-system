@@ -2093,69 +2093,376 @@ def page_pipeline() -> None:
 # ============================================================
 # PAGE: Collabs
 # ============================================================
+COLLAB_STATUS_LABELS = {
+    "pending":   "📦 Pendiente envío",
+    "shipped":   "🚚 Enviada",
+    "posted":    "📸 Posteada (en tracking)",
+    "completed": "✅ Completada",
+    "cancelled": "❌ Cancelada",
+}
+
+COLLAB_TYPE_LABELS_SHORT = {
+    "intercambio": "🔄 Intercambio",
+    "gifted":      "🎁 PR Pack",
+    "paid_light":  "💵 Pago Light",
+    "paid_mid":    "💲 Pago Mid",
+    "paid_hero":   "⭐ Pago Hero",
+    "monthly_fee": "🔁 Fee Mensual",
+}
+
+
 def page_collabs() -> None:
     st.header(":material/handshake: Collabs")
 
-    with st.expander("➕ Registrar collab nueva", expanded=False):
-        eligible = fetch_df(
-            "SELECT handle, full_name, followers, tier FROM candidates "
-            "WHERE status IN ('approved','responded','negotiating','active') "
-            "ORDER BY handle"
-        )
-        if eligible.empty:
-            st.info("No hay candidatas elegibles (aprobadas o en pipeline).")
-        else:
-            handle_opts = eligible["handle"].tolist()
-            handle = st.selectbox("Creadora", handle_opts,
-                                  format_func=lambda h: f"@{h}  ({eligible[eligible['handle']==h]['tier'].iloc[0] or '?'})")
-            campaign_name = st.text_input("Campaign name")
-            campaign_type = st.selectbox("Tipo", ["gifted", "paid_light", "paid_mid", "paid_hero", "hybrid_event"])
+    # Quick stats arriba
+    stats = fetch_df("""
+        SELECT
+          SUM(CASE WHEN status='pending'   THEN 1 ELSE 0 END) AS pending_n,
+          SUM(CASE WHEN status='shipped'   THEN 1 ELSE 0 END) AS shipped_n,
+          SUM(CASE WHEN status='posted'    THEN 1 ELSE 0 END) AS posted_n,
+          SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed_n,
+          SUM(COALESCE(cogs_pieces,0) + COALESCE(shipping_cost,0) + COALESCE(cash_fee,0)) AS total_invest,
+          SUM(COALESCE(emv_mxn,0)) AS total_emv
+        FROM collabs WHERE status != 'cancelled'
+    """).iloc[0]
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("📦 Pendiente", int(stats["pending_n"] or 0))
+    m2.metric("🚚 Enviadas", int(stats["shipped_n"] or 0))
+    m3.metric("📸 Tracking", int(stats["posted_n"] or 0))
+    m4.metric("✅ Done", int(stats["completed_n"] or 0))
+    invest = float(stats["total_invest"] or 0)
+    emv = float(stats["total_emv"] or 0)
+    ratio_overall = (emv / invest) if invest > 0 else 0
+    m5.metric("Ratio global", f"{ratio_overall:.2f}:1" if ratio_overall else "—",
+              help=f"EMV total / inversión total · target {config.EMV_TARGET_RATIO}:1")
 
-            col1, col2, col3 = st.columns(3)
-            cogs = col1.number_input("COGS pieces (MXN)", value=config.STANDARD_PR_PACK_COGS_MXN, step=10.0)
-            shipping = col2.number_input("Shipping (MXN)", value=0.0, step=10.0)
-            cash_fee = col3.number_input("Cash fee (MXN)", value=0.0, step=500.0)
+    st.divider()
 
-            col4, col5 = st.columns(2)
-            usage = col4.number_input("Usage rights (MXN)", value=0.0, step=500.0)
-            agency = col5.number_input("Agency fee (MXN)", value=0.0, step=500.0)
+    tabs = st.tabs(["✏️ Crear nueva", "📋 Activas", "✅ Completadas", "📊 Por campaña"])
+    with tabs[0]:
+        _collab_create_form()
+    with tabs[1]:
+        _collab_list_render(["pending", "shipped", "posted"], "active")
+    with tabs[2]:
+        _collab_list_render(["completed", "cancelled"], "done")
+    with tabs[3]:
+        _collab_by_campaign_view()
 
-            launch = st.date_input("Launch date", value=datetime.now().date())
 
-            if st.button("Registrar collab", type="primary"):
-                with db.connect() as conn:
-                    conn.execute("""
-                        INSERT INTO collabs (handle, campaign_name, campaign_type,
-                            cogs_pieces, retail_pieces, shipping_cost, cash_fee,
-                            usage_rights_fee, agency_fee, launch_date, status)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
-                    """, (handle, campaign_name, campaign_type, cogs, config.STANDARD_PR_PACK_RETAIL_MXN,
-                          shipping, cash_fee, usage, agency, launch.isoformat()))
-                st.success("Collab registrada. Agrega URLs de posts cuando publique.")
-                st.rerun()
-
-    st.subheader("Collabs registradas")
-    collabs = fetch_df("""
-        SELECT id, handle, campaign_name, campaign_type, launch_date, status,
-               cogs_pieces, cash_fee, shipping_cost,
-               emv_mxn, emv_cash_ratio, emv_total_ratio, last_recalc_at
-        FROM collabs ORDER BY created_at DESC
-    """)
-    if collabs.empty:
-        st.info("Aun no hay collabs registradas.")
+def _collab_create_form() -> None:
+    """Form para crear una nueva collab."""
+    eligible = fetch_df(
+        "SELECT handle, full_name, followers, tier FROM candidates "
+        "WHERE status IN ('approved','contacted','responded','negotiating','active') "
+        "ORDER BY handle"
+    )
+    if eligible.empty:
+        st.info("No hay candidatas elegibles. Aprueba o contacta a alguna primero.")
         return
 
-    for col in ("emv_cash_ratio", "emv_total_ratio", "emv_mxn"):
-        collabs[col] = pd.to_numeric(collabs[col], errors="coerce")
-    collabs["Cash Ratio"] = collabs["emv_cash_ratio"].round(2)
-    collabs["Total Ratio"] = collabs["emv_total_ratio"].round(2)
-    collabs["EMV"] = collabs["emv_mxn"].round(0)
-    display = collabs[["id", "handle", "campaign_name", "campaign_type", "launch_date", "status",
-                       "EMV", "Cash Ratio", "Total Ratio", "last_recalc_at"]]
-    st.dataframe(display, use_container_width=True, hide_index=True)
+    with st.form("new_collab_form", clear_on_submit=True):
+        st.markdown("**Quién + Campaña**")
+        c1, c2 = st.columns([2, 2])
+        handle_opts = eligible["handle"].tolist()
+        handle = c1.selectbox(
+            "Creadora", handle_opts,
+            format_func=lambda h: f"@{h} ({eligible[eligible['handle']==h]['tier'].iloc[0] or '?'} · "
+                                   f"{int(eligible[eligible['handle']==h]['followers'].iloc[0] or 0):,}f)",
+        )
+        campaign_name = c2.text_input("Campaña", placeholder="ej. Verano 2026, Community Spotlight, etc.",
+                                       help="Si varias creadoras participan en la misma campaña, usen el MISMO nombre.")
 
-    st.caption(f"Target Total Ratio: {config.EMV_TARGET_RATIO}:1 · "
-               "Las que estén por debajo deberían disparar revisión.")
+        c3, c4 = st.columns([2, 2])
+        campaign_type = c3.selectbox(
+            "Tipo collab",
+            ["intercambio", "gifted", "paid_light", "paid_mid", "paid_hero", "monthly_fee"],
+            format_func=lambda t: COLLAB_TYPE_LABELS_SHORT.get(t, t),
+            index=1,
+        )
+        launch = c4.date_input("Launch date estimada", value=datetime.now().date(),
+                                help="Fecha tentativa de publicación. Se actualizará cuando agregues el link real.")
+
+        st.markdown("**Inversión (MXN)**")
+        c5, c6, c7 = st.columns(3)
+        cogs = c5.number_input("COGS PR pack", min_value=0.0,
+                                value=float(config.STANDARD_PR_PACK_COGS_MXN), step=10.0)
+        shipping = c6.number_input("Shipping", min_value=0.0, value=150.0, step=10.0)
+        cash_fee = c7.number_input("Cash fee", min_value=0.0, value=0.0, step=500.0,
+                                    help="Pago en efectivo a la creadora. 0 si es intercambio/gifted.")
+
+        notes = st.text_area("Notas (opcional)",
+                              placeholder="ej. Acordamos 1 reel + 3 stories. Talla M.",
+                              max_chars=500)
+
+        submit = st.form_submit_button("➕ Crear collab", type="primary",
+                                        use_container_width=True)
+
+    if submit:
+        if not campaign_name.strip():
+            st.error("La campaña no puede estar vacía.")
+            return
+        with db.connect() as conn:
+            cur = conn.execute("""
+                INSERT INTO collabs (handle, campaign_name, campaign_type,
+                    cogs_pieces, retail_pieces, shipping_cost, cash_fee,
+                    launch_date, status, notes, track_days)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+            """, (handle, campaign_name.strip(), campaign_type, cogs,
+                  config.STANDARD_PR_PACK_RETAIL_MXN, shipping, cash_fee,
+                  launch.isoformat(), notes.strip(),
+                  config.TRACKING_DAYS_DEFAULT))
+            new_id = cur.lastrowid
+        st.success(f"✅ Collab #{new_id} creada · @{handle} · {campaign_name.strip()}")
+        st.info("Próximos pasos: márcala como **enviada** cuando mandes el PR, después agrega los **links de posts** cuando publique.")
+
+
+def _collab_list_render(statuses: List[str], queue_key: str) -> None:
+    """Lista expandible de collabs filtrada por status."""
+    placeholders = ",".join("?" * len(statuses))
+    collabs = fetch_df(f"""
+        SELECT c.id, c.handle, c.campaign_name, c.campaign_type, c.launch_date,
+               c.status, c.cogs_pieces, c.shipping_cost, c.cash_fee,
+               c.emv_mxn, c.emv_cash_ratio, c.emv_total_ratio,
+               c.tracking_started_at, c.notes, c.last_recalc_at, c.track_days,
+               c.created_at, cand.full_name, cand.profile_pic_url, cand.followers
+        FROM collabs c
+        LEFT JOIN candidates cand ON c.handle = cand.handle
+        WHERE c.status IN ({placeholders})
+        ORDER BY c.created_at DESC
+    """, tuple(statuses))
+
+    if collabs.empty:
+        st.info("No hay collabs en este estado.")
+        return
+
+    # Filtros
+    fc1, fc2 = st.columns([2, 2])
+    campaigns_list = ["(todas)"] + sorted(collabs["campaign_name"].dropna().unique().tolist())
+    f_campaign = fc1.selectbox("Filtrar por campaña", campaigns_list, key=f"f_camp_{queue_key}")
+    f_search = fc2.text_input("Buscar handle", key=f"f_search_{queue_key}",
+                               placeholder="ej. marianafit")
+    if f_campaign != "(todas)":
+        collabs = collabs[collabs["campaign_name"] == f_campaign]
+    if f_search.strip():
+        q = f_search.strip().lstrip("@").lower()
+        collabs = collabs[collabs["handle"].str.lower().str.contains(q)]
+
+    st.caption(f"**{len(collabs)}** collabs en vista")
+
+    for _, c in collabs.iterrows():
+        _collab_card(c.to_dict(), queue_key)
+
+
+def _collab_card(c: dict, queue_key: str) -> None:
+    """Card expandible de UNA collab."""
+    status_label = COLLAB_STATUS_LABELS.get(c["status"], c["status"])
+    type_label = COLLAB_TYPE_LABELS_SHORT.get(c["campaign_type"], c["campaign_type"])
+
+    # Calcular total + ratios
+    cogs = float(c.get("cogs_pieces") or 0)
+    ship = float(c.get("shipping_cost") or 0)
+    cash = float(c.get("cash_fee") or 0)
+    total_invest = cogs + ship + cash
+    emv = float(c.get("emv_mxn") or 0)
+    total_ratio = (emv / total_invest) if total_invest > 0 else 0
+
+    header_text = (f"**@{c['handle']}** · {c['campaign_name']} · {type_label} · "
+                    f"{status_label}")
+    if emv > 0:
+        ratio_emoji = "✅" if total_ratio >= config.EMV_TARGET_RATIO else "⚠️"
+        header_text += f" · EMV ${emv:,.0f} · ratio {total_ratio:.2f}:1 {ratio_emoji}"
+
+    with st.expander(header_text, expanded=False):
+        # Pic + info hero
+        info_c1, info_c2 = st.columns([1, 4])
+        with info_c1:
+            pic = _to_image_src(c.get("profile_pic_url"))
+            if pic:
+                st.image(pic, width=120)
+        with info_c2:
+            if c.get("full_name"):
+                st.markdown(f"**{c['full_name']}** · {int(c.get('followers') or 0):,} followers")
+            st.markdown(f"_Campaña: **{c['campaign_name']}**_")
+            if c.get("notes"):
+                st.caption(f"📝 {c['notes']}")
+            st.caption(f"Creada: {c.get('created_at') or '?'} · "
+                        f"Launch: {c.get('launch_date') or '?'}")
+
+        # Métricas inversión + EMV
+        st.markdown("**Inversión y EMV**")
+        mm1, mm2, mm3, mm4 = st.columns(4)
+        mm1.metric("COGS", f"${cogs:,.0f}")
+        mm2.metric("Shipping", f"${ship:,.0f}")
+        mm3.metric("Cash", f"${cash:,.0f}")
+        mm4.metric("Total inv.", f"${total_invest:,.0f}")
+
+        if emv > 0:
+            em1, em2 = st.columns(2)
+            em1.metric("EMV actual", f"${emv:,.0f}")
+            em2.metric("Total Ratio", f"{total_ratio:.2f}:1",
+                       delta=f"vs target {config.EMV_TARGET_RATIO}:1")
+            if c.get("last_recalc_at"):
+                st.caption(f"Última actualización de métricas: {c['last_recalc_at']}")
+
+        # Posts vinculados
+        st.markdown("**Posts vinculados**")
+        posts = fetch_df("""
+            SELECT id, post_url, post_type, posted_at, last_scraped_at
+            FROM collab_posts WHERE collab_id=? ORDER BY added_at
+        """, (c["id"],))
+        if posts.empty:
+            st.caption("(ningún post vinculado todavía)")
+        else:
+            for _, p in posts.iterrows():
+                pc1, pc2, pc3 = st.columns([5, 2, 1])
+                pc1.markdown(f"🔗 [{p['post_url']}]({p['post_url']})")
+                pc2.caption(f"{p['post_type']} · posted: {p['posted_at']}")
+                if pc3.button("🗑", key=f"del_post_{p['id']}", help="Eliminar este post"):
+                    with db.connect() as conn:
+                        conn.execute("DELETE FROM collab_posts WHERE id=?", (p["id"],))
+                    st.rerun()
+
+        st.divider()
+
+        # Acciones según status
+        _collab_actions(c, queue_key)
+
+
+def _collab_actions(c: dict, queue_key: str) -> None:
+    """Renderiza acciones según status. Cada botón hace transición de estado."""
+    status = c["status"]
+    cid = c["id"]
+
+    if status == "pending":
+        if st.button(":material/local_shipping: Marcar como enviada (PR mandado)",
+                     key=f"ship_{cid}", type="primary", use_container_width=True):
+            with db.connect() as conn:
+                conn.execute(
+                    "UPDATE collabs SET status='shipped' WHERE id=?", (cid,)
+                )
+            st.success("Marcada como enviada.")
+            st.rerun()
+
+    if status in ("shipped", "posted"):
+        # Form para agregar link de post
+        with st.form(f"add_post_{cid}"):
+            st.markdown("**Agregar link de post**")
+            ac1, ac2, ac3 = st.columns([3, 1, 1])
+            new_url = ac1.text_input("URL del post",
+                                       placeholder="https://instagram.com/p/...")
+            new_type = ac2.selectbox("Tipo",
+                                      ["reel", "post", "carousel", "live"],
+                                      key=f"type_{cid}")
+            new_date = ac3.date_input("Posted", value=datetime.now().date(),
+                                       key=f"date_{cid}")
+            submit_post = st.form_submit_button("➕ Agregar link",
+                                                  use_container_width=True)
+        if submit_post and new_url.strip():
+            with db.connect() as conn:
+                try:
+                    conn.execute("""
+                        INSERT INTO collab_posts
+                          (collab_id, post_url, post_type, posted_at)
+                        VALUES (?, ?, ?, ?)
+                    """, (cid, new_url.strip(), new_type, new_date.isoformat()))
+                    # Si esto es el primer post → status='posted' + tracking inicia
+                    if status == "shipped":
+                        conn.execute(
+                            "UPDATE collabs SET status='posted', "
+                            "tracking_started_at=? WHERE id=?",
+                            (datetime.now().isoformat(timespec="seconds"), cid)
+                        )
+                    st.success("✅ Post vinculado. Click 'Actualizar métricas' para scrape.")
+                except Exception as e:
+                    st.error(f"Error agregando post: {e}")
+            st.rerun()
+
+    if status == "posted":
+        bc1, bc2 = st.columns(2)
+        if bc1.button(":material/sync: Actualizar métricas ahora",
+                       key=f"refresh_{cid}", type="primary",
+                       use_container_width=True):
+            posts = fetch_df(
+                "SELECT post_url FROM collab_posts WHERE collab_id=?", (cid,)
+            )
+            if posts.empty:
+                st.warning("No hay posts vinculados.")
+            else:
+                with st.spinner(f"Scrapeando {len(posts)} post(s)…"):
+                    n_ok = 0
+                    for _, p in posts.iterrows():
+                        try:
+                            apify_jobs.snapshot_collab_post(cid, p["post_url"])
+                            with db.connect() as conn:
+                                conn.execute(
+                                    "UPDATE collab_posts SET last_scraped_at=? "
+                                    "WHERE collab_id=? AND post_url=?",
+                                    (datetime.now().isoformat(timespec="seconds"),
+                                     cid, p["post_url"])
+                                )
+                            n_ok += 1
+                        except Exception as e:
+                            st.error(f"Error en {p['post_url']}: {e}")
+                st.success(f"✅ {n_ok}/{len(posts)} posts actualizados.")
+                st.rerun()
+        if bc2.button(":material/check_circle: Marcar como completada",
+                       key=f"complete_{cid}", use_container_width=True):
+            with db.connect() as conn:
+                conn.execute(
+                    "UPDATE collabs SET status='completed', "
+                    "tracking_ended_at=? WHERE id=?",
+                    (datetime.now().isoformat(timespec="seconds"), cid)
+                )
+            st.success("Marcada como completada.")
+            st.rerun()
+
+    # Cancelar (siempre disponible salvo si ya está completada)
+    if status not in ("completed", "cancelled"):
+        if st.button("❌ Cancelar collab", key=f"cancel_{cid}",
+                      use_container_width=True):
+            with db.connect() as conn:
+                conn.execute(
+                    "UPDATE collabs SET status='cancelled' WHERE id=?", (cid,)
+                )
+            st.rerun()
+
+
+def _collab_by_campaign_view() -> None:
+    """Vista agregada por nombre de campaña."""
+    agg = fetch_df("""
+        SELECT
+          c.campaign_name AS campaign,
+          COUNT(*) AS n_collabs,
+          COUNT(DISTINCT c.handle) AS n_creators,
+          SUM(COALESCE(c.cogs_pieces,0) + COALESCE(c.shipping_cost,0) + COALESCE(c.cash_fee,0)) AS total_invest,
+          SUM(COALESCE(c.emv_mxn,0)) AS total_emv,
+          MIN(c.launch_date) AS first_launch,
+          MAX(c.launch_date) AS last_launch
+        FROM collabs c
+        WHERE c.status != 'cancelled'
+          AND c.campaign_name IS NOT NULL AND c.campaign_name != ''
+        GROUP BY c.campaign_name
+        ORDER BY MAX(c.created_at) DESC
+    """)
+    if agg.empty:
+        st.info("No hay campañas registradas.")
+        return
+
+    for _, row in agg.iterrows():
+        invest = float(row["total_invest"] or 0)
+        emv = float(row["total_emv"] or 0)
+        ratio = (emv / invest) if invest > 0 else 0
+        with st.container(border=True):
+            st.markdown(f"### {row['campaign']}")
+            mm1, mm2, mm3, mm4, mm5 = st.columns(5)
+            mm1.metric("Creadoras", int(row["n_creators"]))
+            mm2.metric("Collabs", int(row["n_collabs"]))
+            mm3.metric("Inversión", f"${invest:,.0f}")
+            mm4.metric("EMV", f"${emv:,.0f}")
+            ratio_str = f"{ratio:.2f}:1" if ratio else "—"
+            mm5.metric("Ratio", ratio_str,
+                        delta=f"vs target {config.EMV_TARGET_RATIO}:1")
+            st.caption(f"Launch range: {row['first_launch']} → {row['last_launch']}")
 
 
 # ============================================================
@@ -2429,7 +2736,7 @@ PAGES = [
     ":material/swipe: Felynder",
     ":material/view_kanban: The chosen ones",
     ":material/handshake: Collabs",
-    ":material/auto_stories: Stories tracking",
+    # Stories tracking: oculto por ahora (broken — retomar siguiente semana)
     ":material/settings: The rules",
 ]
 
