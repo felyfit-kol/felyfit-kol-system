@@ -372,6 +372,9 @@ def init():
         _ensure_column(conn, "candidates", "scout_run_id", "INTEGER")
         _ensure_column(conn, "scout_runs", "session_id", "TEXT")
         _ensure_column(conn, "scout_runs", "session_label", "TEXT")
+        # Contenido pedido (JSON) + EMV proyectado al crear collab
+        _ensure_column(conn, "collabs", "expected_content", "TEXT")
+        _ensure_column(conn, "collabs", "expected_emv", "REAL")
 
     print(f"DB ready at {DB_PATH}")
 

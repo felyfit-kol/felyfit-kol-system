@@ -2200,8 +2200,19 @@ def _collab_create_form() -> None:
         cash_fee = c7.number_input("Cash fee", min_value=0.0, value=0.0, step=500.0,
                                     help="Pago en efectivo a la creadora. 0 si es intercambio/gifted.")
 
+        st.markdown("**Contenido acordado** (afecta EMV proyectado)")
+        cc_cols = st.columns(5)
+        content_counts = {}
+        defaults = {"reel": 1, "carousel": 0, "post": 0, "live": 0, "story": 0}
+        for i, ct in enumerate(["reel", "carousel", "post", "live", "story"]):
+            content_counts[ct] = cc_cols[i].number_input(
+                config.CONTENT_TYPE_LABELS[ct],
+                min_value=0, max_value=20, value=defaults[ct], step=1,
+                key=f"new_collab_{ct}",
+            )
+
         notes = st.text_area("Notas (opcional)",
-                              placeholder="ej. Acordamos 1 reel + 3 stories. Talla M.",
+                              placeholder="ej. Talla M. Locación: gym de Polanco. Hashtags obligatorios: #felyfit",
                               max_chars=500)
 
         submit = st.form_submit_button("➕ Crear collab", type="primary",
@@ -2211,19 +2222,45 @@ def _collab_create_form() -> None:
         if not campaign_name.strip():
             st.error("La campaña no puede estar vacía.")
             return
+        # Calcular EMV proyectado a partir del contenido + métricas de la creadora
+        cand_row = fetch_df(
+            "SELECT tier, avg_likes, avg_comments FROM candidates WHERE handle=?",
+            (handle,),
+        )
+        expected_emv = 0.0
+        if not cand_row.empty:
+            r = cand_row.iloc[0]
+            tier_v = r.get("tier") or "micro"
+            avg_l = float(r.get("avg_likes") or 0)
+            avg_c = float(r.get("avg_comments") or 0)
+            base_emv_per_post = scoring.estimate_expected_emv_from_history(
+                tier=tier_v, avg_likes=avg_l, avg_comments=avg_c, num_posts_in_collab=1,
+            )
+            multiplier = sum(
+                content_counts[ct] * config.CONTENT_TYPE_EMV_MULTIPLIERS[ct]
+                for ct in content_counts
+            )
+            expected_emv = base_emv_per_post * multiplier
+        expected_content_json = json.dumps(content_counts)
+
         with db.connect() as conn:
             cur = conn.execute("""
                 INSERT INTO collabs (handle, campaign_name, campaign_type,
                     cogs_pieces, retail_pieces, shipping_cost, cash_fee,
-                    launch_date, status, notes, track_days)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+                    launch_date, status, notes, track_days,
+                    expected_content, expected_emv)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
             """, (handle, campaign_name.strip(), campaign_type, cogs,
                   config.STANDARD_PR_PACK_RETAIL_MXN, shipping, cash_fee,
                   launch.isoformat(), notes.strip(),
-                  config.TRACKING_DAYS_DEFAULT))
+                  config.TRACKING_DAYS_DEFAULT,
+                  expected_content_json, expected_emv))
             new_id = cur.lastrowid
         st.success(f"✅ Collab #{new_id} creada · @{handle} · {campaign_name.strip()}")
-        st.info("Próximos pasos: márcala como **enviada** cuando mandes el PR, después agrega los **links de posts** cuando publique.")
+        st.info(f"📊 EMV proyectado: **${expected_emv:,.0f} MXN** "
+                 f"basado en el contenido acordado.")
+        st.caption("Próximos pasos: márcala como **enviada** cuando mandes el PR, "
+                    "después agrega los **links de posts** cuando publique.")
 
 
 def _collab_list_render(statuses: List[str], queue_key: str) -> None:
@@ -2306,13 +2343,30 @@ def _collab_card(c: dict, queue_key: str) -> None:
         mm3.metric("Cash", f"${cash:,.0f}")
         mm4.metric("Total inv.", f"${total_invest:,.0f}")
 
-        if emv > 0:
-            em1, em2 = st.columns(2)
-            em1.metric("EMV actual", f"${emv:,.0f}")
-            em2.metric("Total Ratio", f"{total_ratio:.2f}:1",
-                       delta=f"vs target {config.EMV_TARGET_RATIO}:1")
-            if c.get("last_recalc_at"):
-                st.caption(f"Última actualización de métricas: {c['last_recalc_at']}")
+        # EMV: real vs proyectado + ratios
+        exp_emv = float(c.get("expected_emv") or 0)
+        if emv > 0 or exp_emv > 0:
+            em1, em2, em3, em4 = st.columns(4)
+            em1.metric("EMV proyectado", f"${exp_emv:,.0f}")
+            if emv > 0:
+                delta_pct = ((emv - exp_emv) / exp_emv * 100) if exp_emv else None
+                delta_str = f"{delta_pct:+.0f}% vs proyectado" if delta_pct is not None else None
+                em2.metric("EMV real", f"${emv:,.0f}", delta=delta_str)
+                em3.metric("Total Ratio", f"{total_ratio:.2f}:1",
+                            delta=f"vs target {config.EMV_TARGET_RATIO}:1")
+                em4.caption(f"Última actualización:  \n{c.get('last_recalc_at') or '?'}")
+            else:
+                em2.metric("EMV real", "— pendiente")
+                em3.metric("Total Ratio", "—")
+        # Contenido acordado
+        try:
+            exp_content = json.loads(c.get("expected_content") or "{}")
+            pieces = [f"{n}×{config.CONTENT_TYPE_LABELS.get(ct, ct)}"
+                       for ct, n in exp_content.items() if n > 0]
+            if pieces:
+                st.caption("📦 Contenido acordado: " + " + ".join(pieces))
+        except Exception:
+            pass
 
         # Posts vinculados
         st.markdown("**Posts vinculados**")
@@ -2398,23 +2452,80 @@ def _collab_actions(c: dict, queue_key: str) -> None:
             if posts.empty:
                 st.warning("No hay posts vinculados.")
             else:
-                with st.spinner(f"Scrapeando {len(posts)} post(s)…"):
+                # Feedback live por cada post con st.status
+                with st.status(
+                    f"Scrapeando {len(posts)} post(s) de Instagram…",
+                    expanded=True,
+                ) as status_box:
                     n_ok = 0
-                    for _, p in posts.iterrows():
+                    total_likes = 0
+                    total_comments = 0
+                    total_views = 0
+                    for i, p in enumerate(posts.iterrows(), 1):
+                        idx, p = p
+                        post_url = p["post_url"]
+                        status_box.write(f"**[{i}/{len(posts)}]** Analizando "
+                                          f"`{post_url[:60]}…`")
                         try:
-                            apify_jobs.snapshot_collab_post(cid, p["post_url"])
-                            with db.connect() as conn:
-                                conn.execute(
-                                    "UPDATE collab_posts SET last_scraped_at=? "
-                                    "WHERE collab_id=? AND post_url=?",
-                                    (datetime.now().isoformat(timespec="seconds"),
-                                     cid, p["post_url"])
+                            result = apify_jobs.snapshot_collab_post(cid, post_url)
+                            if result.get("error"):
+                                status_box.write(f"  ❌ Error: {result['error']}")
+                            else:
+                                l = int(result.get("likes") or 0)
+                                cm = int(result.get("comments") or 0)
+                                vw = int(result.get("views") or 0)
+                                total_likes += l
+                                total_comments += cm
+                                total_views += vw
+                                status_box.write(
+                                    f"  ✓ {l:,} likes · {cm:,} comments · {vw:,} views"
                                 )
-                            n_ok += 1
+                                with db.connect() as conn:
+                                    conn.execute(
+                                        "UPDATE collab_posts SET last_scraped_at=? "
+                                        "WHERE collab_id=? AND post_url=?",
+                                        (datetime.now().isoformat(timespec="seconds"),
+                                         cid, post_url)
+                                    )
+                                n_ok += 1
                         except Exception as e:
-                            st.error(f"Error en {p['post_url']}: {e}")
-                st.success(f"✅ {n_ok}/{len(posts)} posts actualizados.")
-                st.rerun()
+                            status_box.write(f"  ❌ Error: {type(e).__name__}: {e}")
+
+                    # Resumen final dentro del status box
+                    status_box.write("---")
+                    status_box.write(
+                        f"### Totales agregados\n"
+                        f"- **{total_likes:,}** likes totales\n"
+                        f"- **{total_comments:,}** comments totales\n"
+                        f"- **{total_views:,}** views totales"
+                    )
+                    # Releer EMV actualizado
+                    new_emv_row = fetch_df(
+                        "SELECT emv_mxn, emv_total_ratio FROM collabs WHERE id=?",
+                        (cid,),
+                    )
+                    if not new_emv_row.empty:
+                        new_emv = float(new_emv_row.iloc[0]["emv_mxn"] or 0)
+                        new_ratio = float(new_emv_row.iloc[0]["emv_total_ratio"] or 0)
+                        exp_emv_v = float(c.get("expected_emv") or 0)
+                        delta_str = ""
+                        if exp_emv_v > 0:
+                            pct = ((new_emv - exp_emv_v) / exp_emv_v) * 100
+                            delta_str = f" ({pct:+.0f}% vs proyectado ${exp_emv_v:,.0f})"
+                        status_box.write(
+                            f"### 💰 EMV actualizado: **${new_emv:,.0f} MXN**{delta_str}\n"
+                            f"### 📈 Total Ratio: **{new_ratio:.2f}:1** "
+                            f"(target {config.EMV_TARGET_RATIO}:1)"
+                        )
+
+                    status_box.update(
+                        label=f"✅ {n_ok}/{len(posts)} posts actualizados",
+                        state="complete", expanded=True,
+                    )
+                # Botón explícito para refrescar la card (en vez de auto-rerun
+                # que cerraría el status box que el user está leyendo)
+                if st.button("🔄 Refrescar card", key=f"refresh_card_{cid}"):
+                    st.rerun()
         if bc2.button(":material/check_circle: Marcar como completada",
                        key=f"complete_{cid}", use_container_width=True):
             with db.connect() as conn:
