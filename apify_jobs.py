@@ -833,9 +833,16 @@ def enrich_lark_imports(limit: int = 20) -> List[Dict]:
 # TRACKING — snapshot diario de un post de collab
 # ============================================================
 def snapshot_collab_post(collab_id: int, post_url: str) -> Dict:
-    """Saca metricas actuales del post, guarda snapshot, recalcula EMV de la collab."""
-    actor = config.APIFY_ACTORS["instagram_post"]
-    run = client().actor(actor).call(run_input={"directUrls": [post_url]})
+    """Saca metricas actuales del post, guarda snapshot, recalcula EMV de la collab.
+    Usa apify/instagram-scraper (general) que acepta directUrls sin necesidad de
+    username (a diferencia de instagram-post-scraper que cambió su API)."""
+    actor = config.APIFY_ACTORS["instagram_scraper"]
+    run = client().actor(actor).call(run_input={
+        "directUrls": [post_url],
+        "resultsType": "posts",
+        "resultsLimit": 1,
+        "addParentData": False,
+    })
 
     metrics = None
     for item in client().dataset(run["defaultDatasetId"]).iterate_items():
@@ -843,11 +850,12 @@ def snapshot_collab_post(collab_id: int, post_url: str) -> Dict:
         break
 
     if not metrics:
-        return {"error": "no data"}
+        return {"error": "Apify devolvió 0 items para este post URL"}
 
     likes = metrics.get("likesCount") or 0
     comments = metrics.get("commentsCount") or 0
-    views = metrics.get("videoViewCount") or metrics.get("videoPlayCount") or 0
+    views = (metrics.get("videoViewCount") or metrics.get("videoPlayCount")
+              or metrics.get("viewCount") or 0)
 
     with db.connect() as conn:
         conn.execute(
