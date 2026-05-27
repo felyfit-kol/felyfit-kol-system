@@ -1289,8 +1289,15 @@ def page_profile_lookup() -> None:
         for w in pred["warnings"]:
             st.warning(w)
 
+    # NO se bloquea el planner ni siquiera para "no_collab". El algoritmo es
+    # una sugerencia — Lucy juzga si vale la pena collaborar y necesita las
+    # herramientas para calcular ratios manualmente.
     if pred["type"] == "no_collab":
-        return  # no aplica planear escenarios
+        st.info(
+            "ℹ️ El algoritmo no la recomienda, pero **puedes usar el planner "
+            "abajo igual** para calcular ratios manualmente si quieres explorar "
+            "la colaboración."
+        )
 
     st.divider()
 
@@ -1298,7 +1305,8 @@ def page_profile_lookup() -> None:
     st.subheader(":material/tune: Planner de escenario")
     st.caption(
         "Ajusta el tipo de collab y qué contenido le pides para ver cómo "
-        "cambian EMV y ratios. La recomendación de arriba es solo punto de partida."
+        "cambian EMV y ratios. La recomendación de arriba es solo punto de partida — "
+        "puedes ignorarla si tienes contexto que el algoritmo no ve."
     )
 
     COLLAB_TYPES_USER = ["intercambio", "gifted", "paid_light", "paid_mid",
@@ -1331,8 +1339,16 @@ def page_profile_lookup() -> None:
                     key=f"plan_ct_{ct}_{cand['handle']}",
                 )
 
-    # Calcular EMV ajustado por contenido
+    # Calcular EMV base — si el pred dio 0 (caso no_collab), calculamos directo
+    # desde las métricas orgánicas. Lucy puede querer explorar igual.
     base_emv = float(pred["expected_emv"] or 0)
+    if base_emv == 0 and cand.get("followers") and cand.get("tier"):
+        base_emv = scoring.estimate_expected_emv_from_history(
+            tier=cand.get("tier"),
+            avg_likes=float(cand.get("avg_likes") or 0),
+            avg_comments=float(cand.get("avg_comments") or 0),
+            num_posts_in_collab=1,
+        )
     content_multiplier = sum(
         content_counts[ct] * config.CONTENT_TYPE_EMV_MULTIPLIERS[ct]
         for ct in CONTENT_OPTIONS

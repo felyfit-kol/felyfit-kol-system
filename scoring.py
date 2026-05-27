@@ -401,12 +401,12 @@ def compute_max_cash_investable(
 # Clasificación de tipo de cuenta — heurística por bio + nombre + handle
 # ============================================================
 ACCOUNT_TYPE_LABELS = {
-    "individual": ":material/person: Individual",
-    "studio":     ":material/storefront: Studio",
-    "brand":      ":material/shopping_bag: Brand",
-    "nonprofit":  ":material/volunteer_activism: Nonprofit",
-    "collective": ":material/groups: Collective",
-    "unknown":    ":material/help: Unknown",
+    "individual": "👤 Individual",
+    "studio":     "🏢 Studio",
+    "brand":      "🛍️ Brand",
+    "nonprofit":  "❤️ Nonprofit",
+    "collective": "👥 Collective",
+    "unknown":    "❓ Unknown",
 }
 
 
