@@ -45,9 +45,15 @@ CREATE TABLE IF NOT EXISTS candidates (
     fit_score_breakdown TEXT,    -- JSON
     fit_score_at        TIMESTAMP,
 
+    -- Clasificación demográfica + tipo
+    country             TEXT,    -- ISO code (MX, US, AR, etc) o NULL si no detectable
+    gender              TEXT,    -- 'female' / 'male' / NULL
+    account_type        TEXT,    -- individual / studio / brand / nonprofit / collective / unknown
+
     -- Origen
-    source              TEXT,    -- hashtag / competitor_mention / manual_list / felyfit_followers
+    source              TEXT,    -- hashtag / competitor_mention / manual_list / seeds_relatedProfiles
     source_detail       TEXT,    -- ej. "#activewearmx" o handle competidor
+    scout_run_id        INTEGER, -- FK a scout_runs.id (puede ser NULL para imports)
     discovered_at       TIMESTAMP DEFAULT (datetime('now')),
     last_enriched_at    TIMESTAMP,
 
@@ -323,10 +329,27 @@ def connect():
     return conn
 
 
+def _ensure_column(conn, table: str, column: str, ddl: str) -> None:
+    """Agrega columna a tabla existente si no la tiene. SQLite no tiene
+    ADD COLUMN IF NOT EXISTS, así que checamos con PRAGMA primero."""
+    cols = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
+
 def init():
-    """Crear todas las tablas si no existen. Idempotente."""
+    """Crear todas las tablas si no existen + migrar columnas faltantes.
+    Idempotente — seguro de correr en cada startup."""
     with connect() as conn:
         conn.executescript(SCHEMA)
+
+        # Migraciones: columnas añadidas al schema después de la creación inicial.
+        # Para DBs viejas que aún no las tienen.
+        _ensure_column(conn, "candidates", "country", "TEXT")
+        _ensure_column(conn, "candidates", "gender", "TEXT")
+        _ensure_column(conn, "candidates", "account_type", "TEXT")
+        _ensure_column(conn, "candidates", "scout_run_id", "INTEGER")
+
     print(f"DB ready at {DB_PATH}")
 
 
