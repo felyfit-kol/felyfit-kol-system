@@ -16,6 +16,7 @@ import os
 from datetime import datetime
 from typing import List, Optional
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -434,6 +435,87 @@ REJECT_REASONS = [
 # ============================================================
 # Helpers
 # ============================================================
+def ff_bar_chart(
+    df: pd.DataFrame, x_col: str, y_col: str,
+    *, x_title: str = None, y_title: str = None,
+    height: int = 220, label_format: str = ",.0f",
+    show_labels: bool = True,
+) -> alt.Chart:
+    """Bar chart con paleta FelyFit (gradient burgundy→rose) + labels visibles
+    siempre arriba de cada barra. Estilo unificado para todos los charts.
+
+    Args:
+        df: DataFrame con las columnas x_col + y_col
+        x_col: nombre columna eje X (categorical)
+        y_col: nombre columna eje Y (numeric)
+        height: altura en pixels (default compacto)
+        label_format: format string para los valores (ej. ",.0f" / ",.2f" / ".2%")
+        show_labels: si False, oculta los números arriba (útil cuando hay muchas barras)
+    """
+    bars = alt.Chart(df).mark_bar(
+        cornerRadiusTopLeft=6,
+        cornerRadiusTopRight=6,
+        color=alt.Gradient(
+            gradient="linear",
+            stops=[
+                alt.GradientStop(color="#E5879A", offset=0),    # rose top
+                alt.GradientStop(color="#722F37", offset=1),    # burgundy bottom
+            ],
+            x1=0, y1=0, x2=0, y2=1,
+        ),
+    ).encode(
+        x=alt.X(
+            f"{x_col}:O",
+            title=x_title,
+            axis=alt.Axis(
+                labelAngle=0,
+                labelColor="#8E5A65",
+                labelFontSize=10,
+                labelFont="Quicksand",
+                labelFontWeight=600,
+                titleColor="#8E5A65",
+                domainColor="#F0C9CE",
+                tickColor="#F0C9CE",
+            ),
+        ),
+        y=alt.Y(
+            f"{y_col}:Q",
+            title=y_title,
+            axis=alt.Axis(
+                labelColor="#8E5A65",
+                labelFontSize=10,
+                labelFont="Quicksand",
+                titleColor="#8E5A65",
+                grid=True,
+                gridColor="#F5DDE0",
+                gridOpacity=0.6,
+                domainOpacity=0,
+                tickOpacity=0,
+            ),
+        ),
+        tooltip=[
+            alt.Tooltip(f"{x_col}:O", title=x_title or x_col),
+            alt.Tooltip(f"{y_col}:Q", title=y_title or y_col, format=label_format),
+        ],
+    )
+
+    if show_labels:
+        labels = alt.Chart(df).mark_text(
+            align="center", baseline="bottom", dy=-6,
+            fontSize=11, fontWeight="bold",
+            color="#722F37", font="Bowlby One",
+        ).encode(
+            x=alt.X(f"{x_col}:O"),
+            y=alt.Y(f"{y_col}:Q"),
+            text=alt.Text(f"{y_col}:Q", format=label_format),
+        )
+        chart = (bars + labels)
+    else:
+        chart = bars
+
+    return chart.properties(height=height).configure_view(strokeWidth=0)
+
+
 def fetch_df(sql: str, params: tuple = ()) -> pd.DataFrame:
     try:
         with db.connect() as conn:
@@ -2579,12 +2661,16 @@ def _collab_evolution_chart(c: dict) -> None:
         daily["views"].fillna(0) * mult.get("view_mxn", 0.05)
     )
 
-    # Chart de EMV vs proyectado
+    # Chart de EMV día a día — bar chart burgundy con labels
     exp_emv = float(c.get("expected_emv") or 0)
-    chart_df = daily.set_index("day")[["EMV"]].copy()
-    chart_df["EMV proyectado"] = exp_emv
-
-    st.line_chart(chart_df, height=240, use_container_width=True)
+    daily["EMV"] = daily["EMV"].round(0)
+    st.altair_chart(
+        ff_bar_chart(daily, "day", "EMV", x_title="Día",
+                      y_title="EMV ($)", height=220),
+        use_container_width=True,
+    )
+    if exp_emv > 0:
+        st.caption(f"🎯 EMV proyectado: **${exp_emv:,.0f}**")
     st.caption(
         f"📊 Última fila: {daily.iloc[-1]['day']} · "
         f"EMV ${daily.iloc[-1]['EMV']:,.0f} · "
@@ -2947,10 +3033,14 @@ def _collab_tracking_dashboard() -> None:
         latest["views"].fillna(0) * mult.get("view_mxn", 0.05)
     )
     daily = latest.groupby("day")["emv_real"].sum().reset_index()
-    chart_df = daily.set_index("day")[["emv_real"]].copy()
-    chart_df.columns = ["EMV real (todas las collabs)"]
-    chart_df["EMV proyectado total"] = total_exp_emv
-    st.line_chart(chart_df, height=280, use_container_width=True)
+    daily["emv_real"] = daily["emv_real"].round(0)
+    st.altair_chart(
+        ff_bar_chart(daily, "day", "emv_real",
+                      x_title="Día", y_title="EMV real ($)",
+                      height=240),
+        use_container_width=True,
+    )
+    st.caption(f"🎯 EMV proyectado total: **${total_exp_emv:,.0f}**")
 
     # ===== TABLA RESUMEN POR COLLAB =====
     st.markdown("### Resumen por collab")
@@ -3149,22 +3239,71 @@ def page_dashboard() -> None:
 
     st.divider()
 
-    # ── Chart de evolución ──
-    st.markdown("### 📈 Evolución de followers")
-    chart_df = snaps.set_index("captured_at")[["followers"]].copy()
-    chart_df.columns = ["Followers"]
-    st.line_chart(chart_df, height=280, use_container_width=True)
+    # ── Charts semana a semana ──
+    # Agrupar snapshots por semana ISO. Si hay varios en la misma semana, tomar
+    # el último (snapshot más reciente de esa semana).
+    snaps["week"] = snaps["captured_at"].dt.strftime("W%V")
+    snaps["year"] = snaps["captured_at"].dt.year
+    snaps["week_label"] = snaps["week"]  # ej. "W22"
 
-    st.markdown("### 💬 Engagement rate")
-    er_df = snaps.set_index("captured_at")[["engagement_rate"]].copy()
-    er_df.columns = ["ER"]
-    er_df["ER %"] = er_df["ER"] * 100
-    st.line_chart(er_df[["ER %"]], height=240, use_container_width=True)
+    weekly = (
+        snaps.sort_values("captured_at")
+              .groupby("week_label", sort=False)
+              .agg(
+                  followers=("followers", "last"),
+                  posts_count=("posts_count", "last"),
+                  engagement_rate=("engagement_rate", "last"),
+                  captured_at=("captured_at", "last"),
+              )
+              .reset_index()
+              .sort_values("captured_at")
+    )
 
-    st.markdown("### 📝 Posts totales acumulados")
-    posts_df = snaps.set_index("captured_at")[["posts_count"]].copy()
-    posts_df.columns = ["Posts"]
-    st.line_chart(posts_df, height=200, use_container_width=True)
+    if len(weekly) == 1:
+        st.info(
+            "📊 Mostrando 1 semana. El histórico se construye automáticamente — "
+            "cada lunes 11 AM CDMX se agrega una semana nueva."
+        )
+
+    st.markdown("### 📈 Followers")
+    st.altair_chart(
+        ff_bar_chart(weekly, "week_label", "followers",
+                      x_title="Semana", y_title="Followers", height=240),
+        use_container_width=True,
+    )
+
+    st.markdown("### 💬 Engagement Rate")
+    weekly_er = weekly.copy()
+    weekly_er["ER %"] = (weekly_er["engagement_rate"] * 100).round(2)
+    st.altair_chart(
+        ff_bar_chart(weekly_er, "week_label", "ER %",
+                      x_title="Semana", y_title="ER %", height=200,
+                      label_format=".2f"),
+        use_container_width=True,
+    )
+
+    st.markdown("### 📝 Posts publicados")
+    # Posts acumulados — mostramos delta semanal (publicados esa semana)
+    weekly_posts = weekly.copy()
+    weekly_posts["posts_delta"] = weekly_posts["posts_count"].diff().fillna(
+        weekly_posts["posts_count"]
+    ).astype(int)
+    if len(weekly_posts) == 1:
+        # Solo 1 semana — mostrar total acumulado
+        st.altair_chart(
+            ff_bar_chart(weekly_posts, "week_label", "posts_count",
+                          x_title="Semana", y_title="Posts totales",
+                          height=200),
+            use_container_width=True,
+        )
+    else:
+        st.altair_chart(
+            ff_bar_chart(weekly_posts, "week_label", "posts_delta",
+                          x_title="Semana",
+                          y_title="Posts nuevos esa semana",
+                          height=200),
+            use_container_width=True,
+        )
 
     # ── Tabla con histórico completo ──
     with st.expander(f"📋 Histórico de snapshots ({len(snaps)} filas)",
