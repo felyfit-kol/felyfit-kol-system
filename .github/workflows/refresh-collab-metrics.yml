@@ -1,0 +1,41 @@
+name: Daily collab metrics refresh
+
+on:
+  schedule:
+    # 11:00 AM Mexico City (CDMX is UTC-6) = 17:00 UTC
+    - cron: "0 17 * * *"
+  workflow_dispatch:
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run daily metrics refresh
+        env:
+          APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
+          LARK_APP_ID: ${{ secrets.LARK_APP_ID }}
+          LARK_APP_SECRET: ${{ secrets.LARK_APP_SECRET }}
+          LARK_BASE_APP_TOKEN: ${{ secrets.LARK_BASE_APP_TOKEN }}
+          LARK_DOMAIN: ${{ secrets.LARK_DOMAIN }}
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+        run: python scheduled_metrics_refresh.py
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: collab-metrics-log-${{ github.run_id }}
+          path: data/collab_metrics.log
+          if-no-files-found: ignore
+          retention-days: 14
