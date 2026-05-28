@@ -29,6 +29,9 @@ from typing import Optional
 import streamlit as st
 
 import db
+import i18n
+
+t = i18n.t
 
 # ============================================================
 # Cookie config
@@ -250,28 +253,33 @@ def gate() -> bool:
         </style>
         <div class="ff-login-wrap">
           <div class="ff-login-logo">f*kol</div>
-          <div class="ff-login-tag">FelyFit Brand Team</div>
+          <div class="ff-login-tag">""" + t("auth.brand_team") + """</div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    tab_code, tab_admin = st.tabs([":material/key: Tengo un código",
-                                    ":material/admin_panel_settings: Soy admin"])
+    # Toggle de idioma en el login también (antes de loguear)
+    i18n.lang_toggle_sidebar()
+
+    tab_code, tab_admin = st.tabs([
+        f":material/key: {t('auth.tab_code')}",
+        f":material/admin_panel_settings: {t('auth.tab_admin')}",
+    ])
 
     with tab_code:
-        st.markdown("**Para usuarios del equipo**")
-        st.caption("Pide tu código a Lucy. Se vence 24h después de generado. "
-                    "Tu sesión queda activa 30 días.")
+        st.markdown(f"**{t('auth.for_team')}**")
+        st.caption(t("auth.ask_code"))
         with st.form("code_form"):
-            name = st.text_input("Tu nombre", placeholder="ej. Will, Karen…")
-            code = st.text_input("Código (6 dígitos)", max_chars=6,
+            name = st.text_input(t("auth.your_name"),
+                                  placeholder=t("auth.your_name_ph"))
+            code = st.text_input(t("auth.code_6"), max_chars=6,
                                   placeholder="000000")
-            submit = st.form_submit_button("Entrar", type="primary",
+            submit = st.form_submit_button(t("auth.enter"), type="primary",
                                             use_container_width=True)
         if submit:
             if not name.strip():
-                st.error("Pon tu nombre para el log de accesos.")
+                st.error(t("auth.err_name_required"))
             elif consume_code(code, name.strip()):
                 st.session_state._auth_ok = True
                 st.session_state._auth_user = name.strip().lower()
@@ -280,15 +288,15 @@ def gate() -> bool:
                 _save_session_token(name.strip().lower(), name.strip(), False)
                 st.rerun()
             else:
-                st.error("Código inválido, expirado o ya usado.")
+                st.error(t("auth.err_code"))
 
     with tab_admin:
-        st.markdown("**Solo para administradoras**")
-        st.caption("Tu sesión queda activa 30 días — no tendrás que loggearte de nuevo.")
+        st.markdown(f"**{t('auth.for_admin')}**")
+        st.caption(t("auth.session_30d"))
         with st.form("admin_form"):
-            username = st.text_input("Usuario admin", placeholder="lucy")
-            password = st.text_input("Contraseña", type="password")
-            submit_a = st.form_submit_button("Entrar como admin", type="primary",
+            username = st.text_input(t("auth.admin_user"), placeholder="lucy")
+            password = st.text_input(t("auth.password"), type="password")
+            submit_a = st.form_submit_button(t("auth.enter_admin"), type="primary",
                                               use_container_width=True)
         if submit_a:
             friendly = _check_admin(username.strip().lower(), password, users)
@@ -300,7 +308,7 @@ def gate() -> bool:
                 _save_session_token(username.strip().lower(), friendly, True)
                 st.rerun()
             else:
-                st.error("Usuario o contraseña incorrectos.")
+                st.error(t("auth.err_credentials"))
 
     return False
 
@@ -317,9 +325,9 @@ def logout_button() -> None:
     name = current_user()
     if not name:
         return
-    role = "admin" if is_admin() else "invitada"
-    st.sidebar.caption(f"Sesión: **{name}** · _{role}_")
-    if st.sidebar.button("Cerrar sesión", use_container_width=True):
+    role = t("nav.session.admin") if is_admin() else t("nav.session.guest")
+    st.sidebar.caption(f"{t('nav.session')}: **{name}** · _{role}_")
+    if st.sidebar.button(t("nav.logout"), use_container_width=True):
         for k in list(st.session_state.keys()):
             if k.startswith("_auth") or k == "last_lookup":
                 del st.session_state[k]

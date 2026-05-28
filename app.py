@@ -23,8 +23,12 @@ import apify_jobs
 import auth
 import config
 import db
+import i18n
 import lookup_infographic
 import scoring
+
+# Alias corto para usar t("key") en todo el código
+t = i18n.t
 
 
 # Helper para convertir path local de foto -> data URI base64
@@ -316,6 +320,65 @@ _CUSTOM_CSS = """
     height: 14px;
     margin: 0 6px -2px 0;
     color: var(--burgundy);
+  }
+
+  /* Metric-card-style buttons (Collabs page top) — match st.metric look.
+     El selector usa el sibling pattern: cualquier .stButton que viene DESPUÉS
+     de un .ff-metric-marker se estiliza como metric card. */
+  .ff-metric-marker { display: none; }
+  .ff-metric-marker + div .stButton > button,
+  .ff-metric-marker ~ div .stButton > button {
+    background: #FFFFFF !important;
+    color: #3D2B30 !important;
+    border: 1px solid #F0C9CE !important;
+    border-radius: 18px !important;
+    box-shadow: 0 2px 8px rgba(229, 135, 154, 0.08) !important;
+    padding: 18px 14px !important;
+    height: auto !important;
+    min-height: 110px !important;
+    white-space: pre-wrap !important;
+    text-align: left !important;
+    font-family: 'Quicksand', sans-serif !important;
+    font-weight: 600 !important;
+    font-size: 0.78rem !important;
+    line-height: 1.2 !important;
+    letter-spacing: 0.02em;
+    color: #8E5A65 !important;
+    display: flex !important;
+    flex-direction: column !important;
+    justify-content: space-between !important;
+    transition: all 0.15s ease !important;
+  }
+  .ff-metric-marker + div .stButton > button:hover {
+    border-color: #E5879A !important;
+    box-shadow: 0 4px 16px rgba(229, 135, 154, 0.18) !important;
+    transform: translateY(-1px);
+  }
+  /* La primera línea (emoji + label) chica + uppercase, la segunda (valor) grande Bowlby */
+  .ff-metric-marker + div .stButton > button p {
+    font-family: 'Bowlby One', sans-serif !important;
+    font-weight: 400 !important;
+    font-size: 1.9rem !important;
+    color: #3D2B30 !important;
+    text-transform: none !important;
+    line-height: 1 !important;
+    margin: 8px 0 0 0 !important;
+  }
+  /* Card "activa" — borde rose más fuerte + tinte blush */
+  .ff-metric-marker[data-active="true"] + div .stButton > button {
+    background: #FBF0F2 !important;
+    border-color: #E5879A !important;
+    box-shadow: 0 4px 18px rgba(229, 135, 154, 0.25) !important;
+  }
+  /* Ratio global (disabled button) — mismo look pero sin hover */
+  .ff-metric-marker + div .stButton > button[disabled] {
+    opacity: 1 !important;
+    cursor: default !important;
+  }
+  .ff-metric-marker + div .stButton > button[disabled]:hover {
+    transform: none !important;
+    box-shadow: 0 2px 8px rgba(229, 135, 154, 0.08) !important;
+    border-color: #F0C9CE !important;
   }
 
   /* Hide streamlit branding */
@@ -2202,45 +2265,75 @@ def page_collabs() -> None:
     if "collab_status_filter" not in st.session_state:
         st.session_state.collab_status_filter = "all"
 
-    def _make_metric_btn(col, label: str, value, status_key: str, help_txt: str = ""):
-        """Botón estilizado como metric card. Click → cambia filtro de tab Activas.
-        Streamlit no permite cambiar la tab activa programáticamente, pero como
-        Activas es la PRIMERA tab (default al rerun), el filtro queda aplicado
-        ahí inmediatamente."""
+    # ── Cards clickeables estilizadas como metric cards ──
+    # Streamlit st.button no renderiza markdown (## se ve literal). Usamos
+    # HTML custom dentro del label NO — usamos un truco: el botón está oculto
+    # debajo de un st.markdown HTML que se ve bonito. El click pasa por encima.
+    # Approach final más simple: st.button con label limpio + CSS que estiliza
+    # el button para que parezca una metric card.
+
+    def _metric_card_btn(col, emoji: str, label: str, value, status_key: str):
+        """Card clickeable que se ve como st.metric."""
         is_active = st.session_state.collab_status_filter == status_key
-        btn_label = f"{label}\n\n## {value}"
-        if col.button(btn_label, key=f"metric_btn_{status_key}",
-                       use_container_width=True,
-                       type="primary" if is_active else "secondary",
-                       help=help_txt or f"Click para filtrar Activas por '{status_key}' (toggle)"):
-            new = "all" if is_active else status_key
-            st.session_state.collab_status_filter = new
-            st.rerun()
+        # Inyectamos clase CSS específica via wrapper para estilizar
+        with col:
+            with st.container(border=False):
+                # Marcador HTML invisible para que CSS sepa qué container es
+                st.markdown(
+                    f'<div class="ff-metric-marker" data-active="{str(is_active).lower()}"></div>',
+                    unsafe_allow_html=True,
+                )
+                clicked = st.button(
+                    f"{emoji} {label}\n{value}",
+                    key=f"metric_btn_{status_key}",
+                    use_container_width=True,
+                    help=f"Click para filtrar Activas por '{status_key}' (toggle)",
+                )
+                if clicked:
+                    new = "all" if is_active else status_key
+                    st.session_state.collab_status_filter = new
+                    st.rerun()
 
     m1, m2, m3, m4, m5 = st.columns(5)
-    _make_metric_btn(m1, "📦 Pendiente", int(stats["pending_n"] or 0), "pending")
-    _make_metric_btn(m2, "🚚 Enviadas", int(stats["shipped_n"] or 0), "shipped")
-    _make_metric_btn(m3, "📸 Tracking", int(stats["posted_n"] or 0), "posted")
-    _make_metric_btn(m4, "✅ Done", int(stats["completed_n"] or 0), "completed")
+    _metric_card_btn(m1, "📦", t("collabs.pending"), int(stats["pending_n"] or 0), "pending")
+    _metric_card_btn(m2, "🚚", t("collabs.shipped"), int(stats["shipped_n"] or 0), "shipped")
+    _metric_card_btn(m3, "📸", t("collabs.tracking"), int(stats["posted_n"] or 0), "posted")
+    _metric_card_btn(m4, "✅", t("collabs.done"), int(stats["completed_n"] or 0), "completed")
     invest = float(stats["total_invest"] or 0)
     emv = float(stats["total_emv"] or 0)
     ratio_overall = (emv / invest) if invest > 0 else 0
-    m5.metric("Ratio global", f"{ratio_overall:.2f}:1" if ratio_overall else "—",
-              help=f"EMV total / inversión total · target {config.EMV_TARGET_RATIO}:1")
+    # Ratio global = mismo look pero no clickeable. Usamos un button disabled.
+    with m5:
+        st.markdown(
+            '<div class="ff-metric-marker" data-active="false"></div>',
+            unsafe_allow_html=True,
+        )
+        st.button(
+            f"📊 {t('collabs.ratio_global')}\n{ratio_overall:.2f}:1" if ratio_overall
+                else f"📊 {t('collabs.ratio_global')}\n—",
+            key="metric_ratio_display", use_container_width=True,
+            disabled=True,
+            help=f"EMV total / inversión total · target {config.EMV_TARGET_RATIO}:1",
+        )
 
     # Indicador del filtro actual
     if st.session_state.collab_status_filter != "all":
         st.caption(
-            f"🔍 Filtrando Activas por **{st.session_state.collab_status_filter}** · "
-            "click la card de nuevo para quitar el filtro"
+            f"🔍 {t('collabs.filter_by_status')} **{st.session_state.collab_status_filter}** · "
+            f"{t('collabs.filter_toggle')}"
         )
 
     st.divider()
 
     # Activas PRIMERA — al hacer click en una metric card arriba, después del
     # rerun la tab default es la primera = Activas, donde aplica el filtro.
-    tabs = st.tabs(["📋 Activas", "📊 Dashboard", "✅ Completadas",
-                     "📊 Por campaña", "✏️ Crear nueva"])
+    tabs = st.tabs([
+        f"📋 {t('collabs.tab_active')}",
+        f"📊 {t('collabs.tab_dashboard')}",
+        f"✅ {t('collabs.tab_completed')}",
+        f"📊 {t('collabs.tab_campaign')}",
+        f"✏️ {t('collabs.tab_new')}",
+    ])
     with tabs[0]:
         filter_status = st.session_state.collab_status_filter
         if filter_status == "all":
@@ -3253,11 +3346,11 @@ def _render_stories_grid(*, only_felyfit: bool, days: int = 7) -> None:
 # Main
 # ============================================================
 PAGES = [
-    ":material/search: Scouting",
     ":material/person_search: Stalkear",
-    ":material/swipe: Felynder",
-    ":material/view_kanban: The chosen ones",
     ":material/handshake: Collabs",
+    ":material/view_kanban: The chosen ones",
+    ":material/search: Scouting",
+    ":material/swipe: Felynder",
     # Stories tracking: oculto por ahora (broken — retomar siguiente semana)
     ":material/settings: The rules",
 ]
@@ -3329,7 +3422,11 @@ def main() -> None:
     # session_state manual (race condition entre el widget y el state).
     if "active_page" not in st.session_state:
         st.session_state.active_page = PAGES[0]
-    page = st.sidebar.radio("Página", PAGES, key="active_page")
+    page = st.sidebar.radio(t("nav.page"), PAGES, key="active_page")
+
+    # Toggle de idioma justo después del nav (ES/EN)
+    st.sidebar.divider()
+    i18n.lang_toggle_sidebar()
 
     st.sidebar.divider()
     auth.logout_button()
