@@ -2131,17 +2131,18 @@ def page_collabs() -> None:
         st.session_state.collab_status_filter = "all"
 
     def _make_metric_btn(col, label: str, value, status_key: str, help_txt: str = ""):
-        """Botón estilizado como metric card. Click → cambia filtro + activa tab Activas."""
+        """Botón estilizado como metric card. Click → cambia filtro de tab Activas.
+        Streamlit no permite cambiar la tab activa programáticamente, pero como
+        Activas es la PRIMERA tab (default al rerun), el filtro queda aplicado
+        ahí inmediatamente."""
         is_active = st.session_state.collab_status_filter == status_key
         btn_label = f"{label}\n\n## {value}"
         if col.button(btn_label, key=f"metric_btn_{status_key}",
                        use_container_width=True,
                        type="primary" if is_active else "secondary",
-                       help=help_txt or f"Click para filtrar Activas por '{status_key}'"):
-            # Si ya estaba activo, des-filtra (toggle)
+                       help=help_txt or f"Click para filtrar Activas por '{status_key}' (toggle)"):
             new = "all" if is_active else status_key
             st.session_state.collab_status_filter = new
-            st.session_state["_collab_active_tab"] = 1  # Tab "Activas"
             st.rerun()
 
     m1, m2, m3, m4, m5 = st.columns(5)
@@ -2164,12 +2165,11 @@ def page_collabs() -> None:
 
     st.divider()
 
-    tabs = st.tabs(["✏️ Crear nueva", "📋 Activas", "📊 Dashboard",
-                     "✅ Completadas", "📊 Por campaña"])
+    # Activas PRIMERA — al hacer click en una metric card arriba, después del
+    # rerun la tab default es la primera = Activas, donde aplica el filtro.
+    tabs = st.tabs(["📋 Activas", "📊 Dashboard", "✅ Completadas",
+                     "📊 Por campaña", "✏️ Crear nueva"])
     with tabs[0]:
-        _collab_create_form()
-    with tabs[1]:
-        # Aplicar filtro de status si existe
         filter_status = st.session_state.collab_status_filter
         if filter_status == "all":
             statuses_active = ["pending", "shipped", "posted"]
@@ -2181,12 +2181,14 @@ def page_collabs() -> None:
             statuses_active = ["pending", "shipped", "posted"]
         _collab_list_render(statuses_active, "active",
                              default_expanded=(filter_status == "posted"))
-    with tabs[2]:
+    with tabs[1]:
         _collab_tracking_dashboard()
-    with tabs[3]:
+    with tabs[2]:
         _collab_list_render(["completed", "cancelled"], "done")
-    with tabs[4]:
+    with tabs[3]:
         _collab_by_campaign_view()
+    with tabs[4]:
+        _collab_create_form()
 
 
 def _collab_create_form() -> None:
@@ -2699,10 +2701,22 @@ def _collab_tracking_dashboard() -> None:
     mc1, mc2, mc3, mc4 = st.columns(4)
     mc1.metric("Collabs activas", n_active)
     mc2.metric("EMV proyectado total", f"${total_exp_emv:,.0f}")
-    mc3.metric("EMV real acumulado", f"${total_real_emv:,.0f}",
-                delta=f"{progress_pct:.0f}% del proyectado")
-    mc4.metric("Ratio promedio", f"{avg_ratio:.2f}:1",
-                delta=f"vs target {config.EMV_TARGET_RATIO}:1")
+    # EMV real: delta numérica signed (real - proyectado). Negativo = bajo proyectado.
+    # Streamlit pinta rojo si negativo, verde si positivo, gris con delta_color="off".
+    emv_delta = total_real_emv - total_exp_emv
+    mc3.metric(
+        "EMV real acumulado",
+        f"${total_real_emv:,.0f}",
+        delta=f"{emv_delta:+,.0f} vs proyectado ({progress_pct:.0f}%)",
+    )
+    # Ratio: delta signed vs target. Si está por debajo, sale rojo.
+    target = config.EMV_TARGET_RATIO
+    ratio_delta = avg_ratio - target
+    mc4.metric(
+        "Ratio promedio",
+        f"{avg_ratio:.2f}:1",
+        delta=f"{ratio_delta:+.2f} vs target {target}:1",
+    )
 
     # ===== CHART: EMV diario agregado de TODAS las collabs en tracking =====
     snaps = fetch_df("""
