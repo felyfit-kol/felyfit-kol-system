@@ -1,4 +1,11 @@
-"""SQLite connection + schema. Source of truth del sistema KOL.
+"""SQLite/Turso connection + schema. Source of truth del sistema KOL.
+
+Backend dual:
+- Si TURSO_DATABASE_URL está set en env → conecta a Turso (cloud, persistente).
+- Si no → SQLite local en data/felyfit_kol.db (dev local fallback).
+
+La API que expone es compatible con sqlite3 (connect → execute → fetchall/fetchone),
+así que el resto del código no cambia.
 
 Reglas:
 - Solo este archivo conoce SQL. Otros modulos llaman funciones aqui.
@@ -9,8 +16,36 @@ Reglas:
 import os
 import sqlite3
 from pathlib import Path
+from typing import Any, Iterator, List, Optional, Sequence
 
 DB_PATH = Path(__file__).parent / "data" / "felyfit_kol.db"
+
+# Streamlit Cloud: secrets están en st.secrets pero también se exportan como
+# env vars cuando son root-level. Aquí leemos de env directo + fallback a st.secrets.
+def _get_turso_url() -> Optional[str]:
+    url = os.environ.get("TURSO_DATABASE_URL")
+    if url:
+        return url
+    try:
+        import streamlit as st
+        return st.secrets.get("TURSO_DATABASE_URL")
+    except Exception:
+        return None
+
+
+def _get_turso_token() -> Optional[str]:
+    tok = os.environ.get("TURSO_AUTH_TOKEN")
+    if tok:
+        return tok
+    try:
+        import streamlit as st
+        return st.secrets.get("TURSO_AUTH_TOKEN")
+    except Exception:
+        return None
+
+
+def _use_turso() -> bool:
+    return bool(_get_turso_url() and _get_turso_token())
 
 SCHEMA = """
 -- Candidatas descubiertas o cargadas (cualquier status)
@@ -339,10 +374,244 @@ CREATE INDEX IF NOT EXISTS idx_lookup_at ON lookup_history(looked_up_at DESC);
 """
 
 
+# ============================================================
+# Libsql wrapper — emula la API de sqlite3 sobre HTTP a Turso.
+# Acá vive toda la magia de "drop-in replacement". El código del proyecto
+# no sabe si está hablando con SQLite local o Turso remoto.
+# ============================================================
+class _LibsqlRow:
+    """Drop-in para sqlite3.Row — soporta row[0], row['col'], dict(row), .keys()."""
+    __slots__ = ("_cols", "_vals", "_idx")
+
+    def __init__(self, columns: Sequence[str], values: Sequence):
+        self._cols = tuple(columns)
+        self._vals = tuple(values)
+        self._idx = {c: i for i, c in enumerate(columns)}
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return self._vals[key]
+        if isinstance(key, slice):
+            return self._vals[key]
+        return self._vals[self._idx[key]]
+
+    def __iter__(self):
+        return iter(self._vals)
+
+    def __len__(self):
+        return len(self._vals)
+
+    def keys(self) -> List[str]:
+        return list(self._cols)
+
+    def get(self, key, default=None):
+        if isinstance(key, int):
+            try:
+                return self._vals[key]
+            except IndexError:
+                return default
+        i = self._idx.get(key)
+        return self._vals[i] if i is not None else default
+
+    def __repr__(self):
+        return f"Row({dict(zip(self._cols, self._vals))})"
+
+
+class _LibsqlCursor:
+    """Cursor compatible con sqlite3.Cursor + DB-API 2.0 (que es lo que pandas usa)."""
+    def __init__(self, client=None, row_factory=None, result=None):
+        # Puede ser construido vacío (vía conn.cursor()) y después .execute(),
+        # o ya con un result (para conveniencia de conn.execute()).
+        self._client = client
+        self._row_factory = row_factory
+        self._columns: List[str] = []
+        self._rows: List = []
+        self._iter = iter([])
+        self.lastrowid = None
+        self.rowcount = -1
+        if result is not None:
+            self._consume(result)
+
+    def _consume(self, result) -> None:
+        self._columns = list(result.columns) if result.columns else []
+        self._rows = list(result.rows)
+        self._iter = iter(self._rows)
+        self.lastrowid = getattr(result, "last_insert_rowid", None)
+        self.rowcount = getattr(result, "rows_affected", -1)
+
+    @property
+    def description(self):
+        """DB-API 2.0: lista de 7-tuples (name, ...) por columna.
+        Pandas read_sql_query usa esto para obtener nombres de columnas."""
+        if not self._columns:
+            return None
+        return [(c, None, None, None, None, None, None) for c in self._columns]
+
+    def execute(self, sql: str, params: Optional[Sequence] = None) -> "_LibsqlCursor":
+        """Ejecutar y guardar resultados internamente. Retorna self (DB-API 2.0)."""
+        if self._client is None:
+            raise RuntimeError("Cursor sin cliente — usa conn.cursor() primero.")
+        if params is None or len(params) == 0:
+            result = self._client.execute(sql)
+        else:
+            result = self._client.execute(sql, list(params))
+        self._consume(result)
+        return self
+
+    def executemany(self, sql: str, params_list) -> "_LibsqlCursor":
+        for params in params_list:
+            self.execute(sql, params)
+        return self
+
+    def _wrap(self, row):
+        if self._row_factory is sqlite3.Row or self._row_factory is _LibsqlRow:
+            return _LibsqlRow(self._columns, row)
+        return tuple(row)
+
+    def fetchall(self) -> List:
+        return [self._wrap(r) for r in self._iter]
+
+    def fetchone(self):
+        try:
+            r = next(self._iter)
+        except StopIteration:
+            return None
+        return self._wrap(r)
+
+    def fetchmany(self, size=None):
+        out = []
+        for _ in range(size or 1):
+            try:
+                out.append(self._wrap(next(self._iter)))
+            except StopIteration:
+                break
+        return out
+
+    def __iter__(self) -> Iterator:
+        for r in self._iter:
+            yield self._wrap(r)
+
+    def close(self):
+        pass
+
+
+class _LibsqlConnection:
+    """Connection compatible con sqlite3.Connection sobre HTTP libsql."""
+    def __init__(self, client):
+        self._client = client
+        self.row_factory = None
+        self._closed = False
+
+    def execute(self, sql: str, params: Optional[Sequence] = None) -> _LibsqlCursor:
+        cursor = _LibsqlCursor(client=self._client, row_factory=self.row_factory)
+        cursor.execute(sql, params)
+        return cursor
+
+    def executemany(self, sql: str, params_list) -> _LibsqlCursor:
+        cursor = _LibsqlCursor(client=self._client, row_factory=self.row_factory)
+        cursor.executemany(sql, params_list)
+        return cursor
+
+    def executescript(self, script: str) -> None:
+        """Ejecuta múltiples sentencias separadas por ;
+        Usa batch() para enviar todo en 1 round-trip HTTP (vs N round-trips)."""
+        import libsql_client
+        statements = [s.strip() for s in _split_sql_statements(script) if s.strip()]
+        if not statements:
+            return
+        # batch acepta lista de strings o Statement objects
+        batched = [libsql_client.Statement(s) for s in statements]
+        self._client.batch(batched)
+
+    def commit(self) -> None:
+        # libsql está en autocommit por default — no-op
+        pass
+
+    def rollback(self) -> None:
+        # libsql no soporta rollback en autocommit
+        pass
+
+    def close(self) -> None:
+        if not self._closed:
+            try:
+                self._client.close()
+            except Exception:
+                pass
+            self._closed = True
+
+    def cursor(self) -> _LibsqlCursor:
+        """Retorna un cursor vacío. DB-API 2.0 (pandas read_sql lo usa)."""
+        return _LibsqlCursor(client=self._client, row_factory=self.row_factory)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        # No cerrar — el cliente se mantiene en cache global para reutilizar.
+        # sqlite3's with block hace commit/rollback; aquí autocommit, no-op.
+        pass
+
+
+def _split_sql_statements(script: str) -> List[str]:
+    """Separa SQL multi-statement por ';' fuera de strings/triggers.
+    Versión simple — el schema actual no tiene triggers ni strings con ';'."""
+    out = []
+    current = []
+    in_string = False
+    string_char = None
+    for char in script:
+        if in_string:
+            current.append(char)
+            if char == string_char:
+                in_string = False
+        elif char in ('"', "'"):
+            in_string = True
+            string_char = char
+            current.append(char)
+        elif char == ';':
+            out.append("".join(current))
+            current = []
+        else:
+            current.append(char)
+    if current and "".join(current).strip():
+        out.append("".join(current))
+    return out
+
+
+# Cache global del libsql client — abrir/cerrar HTTP por cada query es caro
+_libsql_client_cache = {"client": None}
+
+
+def _get_libsql_client():
+    """Returns a libsql_client.Client sync. Cached para reutilizar conexión HTTP."""
+    if _libsql_client_cache["client"] is not None:
+        return _libsql_client_cache["client"]
+    import libsql_client
+    url = _get_turso_url()
+    if url.startswith("libsql://"):
+        # libsql_client.create_client_sync usa https:// para HTTP API
+        url = url.replace("libsql://", "https://", 1)
+    client = libsql_client.create_client_sync(
+        url=url,
+        auth_token=_get_turso_token(),
+    )
+    _libsql_client_cache["client"] = client
+    return client
+
+
 def connect():
-    """Get a connection with sane defaults."""
+    """Get a connection with sane defaults.
+
+    Returns Turso connection if TURSO_* env vars set, else local SQLite.
+    En ambos casos, row_factory pre-seteado a sqlite3.Row (acceso por nombre).
+    """
+    if _use_turso():
+        conn = _LibsqlConnection(_get_libsql_client())
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    # Fallback: SQLite local
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    # No detect_types: timestamps stay as strings (avoids ISO 'T' separator issues).
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
