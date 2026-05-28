@@ -2462,7 +2462,7 @@ def _collab_card(c: dict, queue_key: str, default_expanded: bool = False) -> Non
                 pc1, pc2, pc3 = st.columns([5, 2, 1])
                 pc1.markdown(f"🔗 [{p['post_url']}]({p['post_url']})")
                 pc2.caption(f"{p['post_type']} · posted: {p['posted_at']}")
-                if pc3.button("🗑", key=f"del_post_{p['id']}", help="Eliminar este post"):
+                if pc3.button("🗑", key=f"del_post_{queue_key}_{p['id']}", help="Eliminar este post"):
                     with db.connect() as conn:
                         conn.execute("DELETE FROM collab_posts WHERE id=?", (p["id"],))
                     st.rerun()
@@ -2480,7 +2480,7 @@ def _collab_actions(c: dict, queue_key: str) -> None:
 
     if status == "pending":
         if st.button(":material/local_shipping: Marcar como enviada (PR mandado)",
-                     key=f"ship_{cid}", type="primary", use_container_width=True):
+                     key=f"ship_{queue_key}_{cid}", type="primary", use_container_width=True):
             with db.connect() as conn:
                 conn.execute(
                     "UPDATE collabs SET status='shipped' WHERE id=?", (cid,)
@@ -2490,16 +2490,16 @@ def _collab_actions(c: dict, queue_key: str) -> None:
 
     if status in ("shipped", "posted"):
         # Form para agregar link de post
-        with st.form(f"add_post_{cid}"):
+        with st.form(f"add_post_{queue_key}_{cid}"):
             st.markdown("**Agregar link de post**")
             ac1, ac2, ac3 = st.columns([3, 1, 1])
             new_url = ac1.text_input("URL del post",
                                        placeholder="https://instagram.com/p/...")
             new_type = ac2.selectbox("Tipo",
                                       ["reel", "post", "carousel", "live"],
-                                      key=f"type_{cid}")
+                                      key=f"type_{queue_key}_{cid}")
             new_date = ac3.date_input("Posted", value=datetime.now().date(),
-                                       key=f"date_{cid}")
+                                       key=f"date_{queue_key}_{cid}")
             submit_post = st.form_submit_button("➕ Agregar link",
                                                   use_container_width=True)
         if submit_post and new_url.strip():
@@ -2525,7 +2525,7 @@ def _collab_actions(c: dict, queue_key: str) -> None:
     if status == "posted":
         bc1, bc2 = st.columns(2)
         if bc1.button(":material/sync: Actualizar métricas ahora",
-                       key=f"refresh_{cid}", type="primary",
+                       key=f"refresh_{queue_key}_{cid}", type="primary",
                        use_container_width=True):
             posts = fetch_df(
                 "SELECT post_url FROM collab_posts WHERE collab_id=?", (cid,)
@@ -2605,10 +2605,10 @@ def _collab_actions(c: dict, queue_key: str) -> None:
                     )
                 # Botón explícito para refrescar la card (en vez de auto-rerun
                 # que cerraría el status box que el user está leyendo)
-                if st.button("🔄 Refrescar card", key=f"refresh_card_{cid}"):
+                if st.button("🔄 Refrescar card", key=f"refresh_card_{queue_key}_{cid}"):
                     st.rerun()
         if bc2.button(":material/check_circle: Marcar como completada",
-                       key=f"complete_{cid}", use_container_width=True):
+                       key=f"complete_{queue_key}_{cid}", use_container_width=True):
             with db.connect() as conn:
                 conn.execute(
                     "UPDATE collabs SET status='completed', "
@@ -2620,7 +2620,7 @@ def _collab_actions(c: dict, queue_key: str) -> None:
 
     # Cancelar (siempre disponible salvo si ya está completada)
     if status not in ("completed", "cancelled"):
-        if st.button("❌ Cancelar collab", key=f"cancel_{cid}",
+        if st.button("❌ Cancelar collab", key=f"cancel_{queue_key}_{cid}",
                       use_container_width=True):
             with db.connect() as conn:
                 conn.execute(
