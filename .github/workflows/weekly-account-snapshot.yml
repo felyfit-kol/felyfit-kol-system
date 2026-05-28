@@ -1,0 +1,37 @@
+name: Weekly account snapshot
+
+on:
+  schedule:
+    # Cada lunes a las 11:00 AM CDMX (17:00 UTC)
+    - cron: "0 17 * * 1"
+  workflow_dispatch:
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Snapshot tracked accounts
+        env:
+          APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+        run: python scheduled_weekly_snapshot.py
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: weekly-snapshot-log-${{ github.run_id }}
+          path: data/weekly_snapshot.log
+          if-no-files-found: ignore
+          retention-days: 30
