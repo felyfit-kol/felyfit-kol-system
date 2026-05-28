@@ -1277,3 +1277,69 @@ def scrape_stories_for_active_collabs() -> Dict:
         ).fetchall()
     handles = [r["handle"] for r in rows]
     return scrape_stories_for_handles(handles)
+
+
+# ============================================================
+# Account snapshots — tracking periódico de IGs (e.g. felyfit_mx)
+# ============================================================
+def snapshot_account(handle: str) -> Dict:
+    """Scrape estado actual de una cuenta IG y guarda snapshot en
+    account_snapshots. NO toca la tabla candidates (es para tracking de
+    cuentas propias / competidores, no de creadoras prospect)."""
+    handle = handle.lower().lstrip("@").strip()
+    if not handle:
+        return {"error": "handle vacío"}
+
+    actor = config.APIFY_ACTORS["instagram_profile"]
+    run_input = {"usernames": [handle], "resultsLimit": 12}
+    run = client().actor(actor).call(run_input=run_input)
+
+    profile_data = None
+    posts_data: List[dict] = []
+    for item in client().dataset(run["defaultDatasetId"]).iterate_items():
+        profile_data = item
+        posts_data = item.get("latestPosts", [])[:12]
+        break
+
+    if not profile_data:
+        return {"error": "no profile data", "handle": handle}
+
+    followers = profile_data.get("followersCount") or 0
+    following = profile_data.get("followsCount") or 0
+    posts_count = profile_data.get("postsCount") or 0
+    bio = profile_data.get("biography") or ""
+    full_name = profile_data.get("fullName") or ""
+    is_verified = 1 if profile_data.get("verified") else 0
+
+    total_likes = 0
+    total_comments = 0
+    total_views = 0
+    for p in posts_data:
+        total_likes += p.get("likesCount") or 0
+        total_comments += p.get("commentsCount") or 0
+        total_views += p.get("videoViewCount") or p.get("videoPlayCount") or 0
+    n = max(1, len(posts_data))
+    avg_likes = total_likes / n
+    avg_comments = total_comments / n
+    avg_views = total_views / n
+    er = (avg_likes + avg_comments) / followers if followers else 0
+
+    with db.connect() as conn:
+        conn.execute(
+            "INSERT INTO account_snapshots "
+            "(handle, followers, following, posts_count, avg_likes, "
+            " avg_comments, avg_views, engagement_rate, bio, full_name, is_verified) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (handle, followers, following, posts_count, avg_likes,
+             avg_comments, avg_views, er, bio, full_name, is_verified),
+        )
+
+    return {
+        "handle": handle,
+        "followers": followers,
+        "following": following,
+        "posts_count": posts_count,
+        "engagement_rate": er,
+        "avg_likes": avg_likes,
+        "avg_comments": avg_comments,
+    }

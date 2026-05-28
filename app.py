@@ -3030,6 +3030,185 @@ def _collab_by_campaign_view() -> None:
 # ============================================================
 # PAGE: Settings
 # ============================================================
+def page_dashboard() -> None:
+    """Dashboard global de tracking de cuentas (felyfit_mx por ahora,
+    extensible a más cuentas en el futuro). Vista semana a semana."""
+    st.header(":material/dashboard: Dashboard")
+    st.caption(
+        "Tracking semanal de cuentas FelyFit. Los snapshots se toman cada "
+        "lunes 11 AM CDMX automáticamente via GitHub Actions."
+    )
+
+    # ── Cuenta a mostrar ──
+    snaps_by_handle = fetch_df("""
+        SELECT handle, COUNT(*) AS n, MAX(captured_at) AS last_at
+        FROM account_snapshots
+        GROUP BY handle
+        ORDER BY n DESC
+    """)
+    if snaps_by_handle.empty:
+        st.info(
+            "Aún no hay snapshots. El primer snapshot se toma "
+            "automáticamente el próximo lunes — o puedes correrlo manual con "
+            "el botón abajo si eres admin."
+        )
+        if auth.is_admin():
+            if st.button(":material/sync: Tomar snapshot ahora",
+                          type="primary", use_container_width=True):
+                with st.spinner("Scrapeando @felyfit_mx…"):
+                    try:
+                        res = apify_jobs.snapshot_account("felyfit_mx")
+                        if res.get("error"):
+                            st.error(f"Error: {res['error']}")
+                        else:
+                            st.success(
+                                f"✅ Snapshot tomado · "
+                                f"{int(res['followers']):,} followers · "
+                                f"ER {res['engagement_rate']*100:.2f}%"
+                            )
+                            st.rerun()
+                    except Exception as e:
+                        st.error(f"Error: {type(e).__name__}: {e}")
+        return
+
+    # ── Selector de cuenta (por ahora solo felyfit_mx, pero ya soporta más) ──
+    available = snaps_by_handle["handle"].tolist()
+    selected = st.selectbox(
+        "Cuenta", available,
+        format_func=lambda h: f"@{h}",
+        key="dashboard_account_sel",
+    )
+
+    # Toda la data de la cuenta seleccionada
+    snaps = fetch_df("""
+        SELECT id, captured_at, followers, following, posts_count,
+               avg_likes, avg_comments, avg_views, engagement_rate,
+               full_name, is_verified
+        FROM account_snapshots
+        WHERE handle = ?
+        ORDER BY captured_at
+    """, (selected,))
+
+    if snaps.empty:
+        st.warning("Sin data para esta cuenta.")
+        return
+
+    # Convertir tipos para pandas
+    snaps["captured_at"] = pd.to_datetime(snaps["captured_at"])
+    for col in ("followers", "following", "posts_count"):
+        snaps[col] = pd.to_numeric(snaps[col], errors="coerce")
+    for col in ("avg_likes", "avg_comments", "avg_views", "engagement_rate"):
+        snaps[col] = pd.to_numeric(snaps[col], errors="coerce")
+
+    latest = snaps.iloc[-1]
+    previous = snaps.iloc[-2] if len(snaps) >= 2 else None
+
+    # ── Métricas actuales con delta vs snapshot anterior ──
+    def _delta_num(curr, prev, fmt: str = "{:+,.0f}"):
+        if prev is None or pd.isna(prev):
+            return None
+        d = curr - prev
+        return fmt.format(d) if d != 0 else None
+
+    st.markdown(f"### @{selected}" + (" ✓" if latest.get("is_verified") else ""))
+    if latest.get("full_name"):
+        st.caption(f"**{latest['full_name']}**")
+
+    mc1, mc2, mc3, mc4 = st.columns(4)
+    mc1.metric(
+        "Followers",
+        f"{int(latest['followers'] or 0):,}",
+        delta=_delta_num(latest["followers"], previous["followers"] if previous is not None else None)
+            if previous is not None else None,
+    )
+    mc2.metric(
+        "Following",
+        f"{int(latest['following'] or 0):,}",
+        delta=_delta_num(latest["following"], previous["following"] if previous is not None else None)
+            if previous is not None else None,
+    )
+    mc3.metric(
+        "Posts totales",
+        f"{int(latest['posts_count'] or 0):,}",
+        delta=_delta_num(latest["posts_count"], previous["posts_count"] if previous is not None else None)
+            if previous is not None else None,
+    )
+    er_now = float(latest["engagement_rate"] or 0) * 100
+    er_delta = None
+    if previous is not None and not pd.isna(previous["engagement_rate"]):
+        er_prev = float(previous["engagement_rate"]) * 100
+        d = er_now - er_prev
+        if d != 0:
+            er_delta = f"{d:+.2f}pp"
+    mc4.metric("ER actual", f"{er_now:.2f}%", delta=er_delta)
+
+    st.caption(
+        f"Último snapshot: {latest['captured_at'].strftime('%Y-%m-%d %H:%M')} · "
+        f"{len(snaps)} snapshots totales"
+    )
+
+    st.divider()
+
+    # ── Chart de evolución ──
+    st.markdown("### 📈 Evolución de followers")
+    chart_df = snaps.set_index("captured_at")[["followers"]].copy()
+    chart_df.columns = ["Followers"]
+    st.line_chart(chart_df, height=280, use_container_width=True)
+
+    st.markdown("### 💬 Engagement rate")
+    er_df = snaps.set_index("captured_at")[["engagement_rate"]].copy()
+    er_df.columns = ["ER"]
+    er_df["ER %"] = er_df["ER"] * 100
+    st.line_chart(er_df[["ER %"]], height=240, use_container_width=True)
+
+    st.markdown("### 📝 Posts totales acumulados")
+    posts_df = snaps.set_index("captured_at")[["posts_count"]].copy()
+    posts_df.columns = ["Posts"]
+    st.line_chart(posts_df, height=200, use_container_width=True)
+
+    # ── Tabla con histórico completo ──
+    with st.expander(f"📋 Histórico de snapshots ({len(snaps)} filas)",
+                      expanded=False):
+        display = snaps.copy()
+        display["Fecha"] = display["captured_at"].dt.strftime("%Y-%m-%d %H:%M")
+        display["Followers"] = display["followers"].fillna(0).astype(int).map("{:,}".format)
+        display["Posts"] = display["posts_count"].fillna(0).astype(int).map("{:,}".format)
+        display["ER %"] = (display["engagement_rate"] * 100).round(2)
+        display["Avg likes"] = display["avg_likes"].fillna(0).astype(int).map("{:,}".format)
+        display["Avg comments"] = display["avg_comments"].fillna(0).astype(int).map("{:,}".format)
+        st.dataframe(
+            display[["Fecha", "Followers", "Posts", "ER %", "Avg likes", "Avg comments"]]
+                .iloc[::-1],  # más reciente arriba
+            use_container_width=True, hide_index=True,
+        )
+
+    # ── Trigger manual (solo admin) ──
+    if auth.is_admin():
+        st.divider()
+        with st.expander(":material/sync: Tomar snapshot manual"):
+            st.caption(
+                "El snapshot automático corre cada lunes 11 AM CDMX vía GitHub Actions. "
+                "Usa este botón si necesitas un snapshot fuera de horario."
+            )
+            if st.button(":material/sync: Snapshot @felyfit_mx ahora",
+                          type="primary", use_container_width=True,
+                          key="dashboard_manual_snapshot"):
+                with st.spinner("Scrapeando @felyfit_mx…"):
+                    try:
+                        res = apify_jobs.snapshot_account("felyfit_mx")
+                        if res.get("error"):
+                            st.error(f"Error: {res['error']}")
+                        else:
+                            st.success(
+                                f"✅ Snapshot tomado · "
+                                f"{int(res['followers']):,} followers · "
+                                f"ER {res['engagement_rate']*100:.2f}%"
+                            )
+                            st.rerun()
+                    except Exception as e:
+                        st.error(f"Error: {type(e).__name__}: {e}")
+
+
 def page_settings() -> None:
     st.header(":material/settings: The rules")
 
@@ -3369,6 +3548,7 @@ def _render_stories_grid(*, only_felyfit: bool, days: int = 7) -> None:
 # Main
 # ============================================================
 PAGES = [
+    ":material/dashboard: Dashboard",
     ":material/person_search: Stalkear",
     ":material/handshake: Collabs",
     ":material/view_kanban: The chosen ones",
@@ -3460,7 +3640,9 @@ def main() -> None:
     # restaurarlas, descomenta la línea de abajo. La función sigue disponible.
     # render_header()
 
-    if page.endswith("Scouting"):
+    if page.endswith("Dashboard"):
+        page_dashboard()
+    elif page.endswith("Scouting"):
         page_scouting()
     elif page.endswith("Stalkear"):
         page_profile_lookup()

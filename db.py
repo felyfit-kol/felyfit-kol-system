@@ -342,6 +342,29 @@ CREATE TABLE IF NOT EXISTS access_codes (
 CREATE INDEX IF NOT EXISTS idx_access_codes_expires ON access_codes(expires_at);
 
 
+-- Account snapshots — tracking periódico de cuentas de IG (empezando por
+-- @felyfit_mx). Cada fila es un snapshot de followers/engagement en un
+-- momento dado. Sirve para graficar crecimiento semana a semana.
+CREATE TABLE IF NOT EXISTS account_snapshots (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    handle          TEXT NOT NULL,
+    captured_at     TIMESTAMP DEFAULT (datetime('now')),
+    followers       INTEGER,
+    following       INTEGER,
+    posts_count     INTEGER,
+    avg_likes       REAL,
+    avg_comments    REAL,
+    avg_views       REAL,
+    engagement_rate REAL,
+    bio             TEXT,
+    full_name       TEXT,
+    is_verified     INTEGER DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_account_snapshots_handle
+    ON account_snapshots(handle, captured_at DESC);
+
+
 -- Lookup history — cada vez que Lucy hace un lookup en Stalkear se guarda
 -- snapshot de métricas + recomendación de collab. Para retornar a comparar
 -- decisiones pasadas / ver cómo evolucionó la creadora.
