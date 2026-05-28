@@ -3455,8 +3455,10 @@ def main() -> None:
     auth.logout_button()
     st.sidebar.caption(f"Last refresh: {datetime.now().strftime('%H:%M:%S')}")
 
-    render_header()
-    st.divider()
+    # render_header() retirado — las cards globales (Total/Discovered/Approved/...)
+    # eran redundantes con la info granular de cada sección. Si en el futuro quieres
+    # restaurarlas, descomenta la línea de abajo. La función sigue disponible.
+    # render_header()
 
     if page.endswith("Scouting"):
         page_scouting()
