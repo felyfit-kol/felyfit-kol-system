@@ -1287,6 +1287,77 @@ def page_profile_lookup() -> None:
 
     st.divider()
 
+    # ===== ACCIONES DE PIPELINE =====
+    # Status actual + acción para agregar/reactivar.
+    # Si está 'discovered', botón para approve (entra al pipeline + sync Lark
+    # → ya aparece en dropdown de "Crear nueva collab").
+    current_status = cand.get("status") or "discovered"
+    STATUS_BADGE = {
+        "discovered":   ("📋 Sin clasificar", "info"),
+        "approved":     ("✅ En pipeline (approved)", "success"),
+        "contacted":    ("📨 Contactada", "success"),
+        "responded":    ("💬 Respondió", "success"),
+        "negotiating":  ("🤝 Negociando", "success"),
+        "active":       ("🎬 Collab activa", "success"),
+        "paused":       ("⏸ Pausada", "warning"),
+        "rejected":     ("❌ Rechazada manualmente", "error"),
+        "auto_rejected":("🚫 Auto-rechazada por filtros", "error"),
+        "declined":     ("❌ Declinó", "error"),
+    }
+    badge_label, badge_kind = STATUS_BADGE.get(current_status, (current_status, "info"))
+
+    st.subheader(":material/group_add: Acciones de pipeline")
+    pc1, pc2 = st.columns([2, 1])
+    with pc1:
+        st.markdown(f"**Estado actual**: `{current_status}`")
+        if badge_kind == "success":
+            st.success(badge_label)
+        elif badge_kind == "warning":
+            st.warning(badge_label)
+        elif badge_kind == "error":
+            st.error(badge_label)
+        else:
+            st.info(badge_label)
+
+    with pc2:
+        if current_status == "discovered":
+            if st.button(":material/check_circle: Agregar al pipeline",
+                          type="primary", use_container_width=True,
+                          key=f"approve_from_stalker_{cand['handle']}",
+                          help="Cambia status a 'approved' + sincroniza con Lark. "
+                               "Después aparece en el dropdown de 'Crear nueva collab'."):
+                try:
+                    result = approve_to_lark(cand["handle"])
+                    st.success(
+                        f"✅ Agregada al pipeline · Lark record: "
+                        f"`{result.get('record_id', '?')}`. "
+                        "Ya puedes registrar collabs con ella."
+                    )
+                    # Refrescar para que el botón cambie a "en pipeline"
+                    st.session_state.last_lookup["candidate"]["status"] = "approved"
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error al aprobar: {e}")
+        elif current_status in ("auto_rejected", "rejected", "declined"):
+            if st.button(":material/restart_alt: Reactivar al pipeline",
+                          use_container_width=True,
+                          key=f"reactivate_{cand['handle']}",
+                          help="Restaurar a status='approved'."):
+                try:
+                    result = approve_to_lark(cand["handle"])
+                    st.success(f"✅ Reactivada al pipeline.")
+                    st.session_state.last_lookup["candidate"]["status"] = "approved"
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error: {e}")
+        else:
+            st.caption(
+                "Ya está en el pipeline. Para registrar una collab con ella, "
+                "ve a **Collabs → Crear nueva**."
+            )
+
+    st.divider()
+
     # ===== RECOMENDACIÓN INICIAL DEL ALGORITMO =====
     st.subheader(":material/target: Recomendación del algoritmo")
     if pred["type"] in ("no_collab", "skip"):
