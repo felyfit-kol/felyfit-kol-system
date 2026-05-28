@@ -1430,10 +1430,11 @@ def page_profile_lookup() -> None:
         cash_ratio_str = "∞" if cash == 0 else f"{cash_ratio:.2f}:1"
 
         r1, r2 = st.columns(2)
+        # EMV ajustado vs base es info (no comparación buena/mala) — gris con delta_color=off
         emv_delta = (f"vs base ${base_emv:,.0f}"
                       if content_multiplier and content_multiplier != 1 else None)
         r1.metric("EMV ajustado", f"${adjusted_emv:,.0f}",
-                  delta=emv_delta,
+                  delta=emv_delta, delta_color="off",
                   help=f"EMV base × {content_multiplier:.2f} (suma multipliers)")
         r2.metric("Total inversión", f"${total_invest:,.0f}")
 
@@ -2458,16 +2459,25 @@ def _collab_card(c: dict, queue_key: str, default_expanded: bool = False) -> Non
         mm4.metric("Total inv.", f"${total_invest:,.0f}")
 
         # EMV: real vs proyectado + ratios
+        # Deltas con SIGNO REAL para que Streamlit pinte rojo/verde correcto:
+        # - EMV real - proyectado: negativo si bajo proyectado (rojo)
+        # - Total ratio - target: negativo si bajo target (rojo)
         exp_emv = float(c.get("expected_emv") or 0)
         if emv > 0 or exp_emv > 0:
             em1, em2, em3, em4 = st.columns(4)
             em1.metric("EMV proyectado", f"${exp_emv:,.0f}")
             if emv > 0:
-                delta_pct = ((emv - exp_emv) / exp_emv * 100) if exp_emv else None
-                delta_str = f"{delta_pct:+.0f}% vs proyectado" if delta_pct is not None else None
-                em2.metric("EMV real", f"${emv:,.0f}", delta=delta_str)
-                em3.metric("Total Ratio", f"{total_ratio:.2f}:1",
-                            delta=f"vs target {config.EMV_TARGET_RATIO}:1")
+                emv_diff = emv - exp_emv
+                pct = (emv_diff / exp_emv * 100) if exp_emv > 0 else 0
+                em2.metric(
+                    "EMV real", f"${emv:,.0f}",
+                    delta=f"{emv_diff:+,.0f} ({pct:+.0f}%) vs proyectado",
+                )
+                target = config.EMV_TARGET_RATIO
+                em3.metric(
+                    "Total Ratio", f"{total_ratio:.2f}:1",
+                    delta=f"{total_ratio - target:+.2f} vs target {target}:1",
+                )
                 em4.caption(f"Última actualización:  \n{c.get('last_recalc_at') or '?'}")
             else:
                 em2.metric("EMV real", "— pendiente")
@@ -2819,9 +2829,14 @@ def _collab_by_campaign_view() -> None:
             mm2.metric("Collabs", int(row["n_collabs"]))
             mm3.metric("Inversión", f"${invest:,.0f}")
             mm4.metric("EMV", f"${emv:,.0f}")
-            ratio_str = f"{ratio:.2f}:1" if ratio else "—"
-            mm5.metric("Ratio", ratio_str,
-                        delta=f"vs target {config.EMV_TARGET_RATIO}:1")
+            target = config.EMV_TARGET_RATIO
+            if ratio:
+                mm5.metric(
+                    "Ratio", f"{ratio:.2f}:1",
+                    delta=f"{ratio - target:+.2f} vs target {target}:1",
+                )
+            else:
+                mm5.metric("Ratio", "—")
             st.caption(f"Launch range: {row['first_launch']} → {row['last_launch']}")
 
 
