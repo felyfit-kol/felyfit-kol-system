@@ -3183,8 +3183,13 @@ def page_dashboard() -> None:
         st.warning("Sin data para esta cuenta.")
         return
 
-    # Convertir tipos para pandas
-    snaps["captured_at"] = pd.to_datetime(snaps["captured_at"])
+    # Convertir tipos para pandas. format='ISO8601' acepta tanto
+    # 'YYYY-MM-DDTHH:MM:SS' como 'YYYY-MM-DD HH:MM:SS' sin truenar
+    # en pandas 2.x cuando hay formatos mezclados en Turso.
+    snaps["captured_at"] = pd.to_datetime(
+        snaps["captured_at"], format="ISO8601", errors="coerce"
+    )
+    snaps = snaps.dropna(subset=["captured_at"]).reset_index(drop=True)
     for col in ("followers", "following", "posts_count"):
         snaps[col] = pd.to_numeric(snaps[col], errors="coerce")
     for col in ("avg_likes", "avg_comments", "avg_views", "engagement_rate"):
