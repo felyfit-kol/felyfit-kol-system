@@ -322,63 +322,87 @@ _CUSTOM_CSS = """
     color: var(--burgundy);
   }
 
-  /* Metric-card-style buttons (Collabs page top) — match st.metric look.
-     El selector usa el sibling pattern: cualquier .stButton que viene DESPUÉS
-     de un .ff-metric-marker se estiliza como metric card. */
-  .ff-metric-marker { display: none; }
-  .ff-metric-marker + div .stButton > button,
-  .ff-metric-marker ~ div .stButton > button {
+  /* ── Metric cards en Collabs (Pendiente / Enviadas / Tracking / Done / Ratio) ──
+     Estructura HTML producida por _metric_card():
+     <ff-card-marker>  (invisible, marca el container siguiente como card)
+     <stVerticalBlockBorderWrapper>  (st.container border=True)
+       <ff-card-label>📦 Pendiente</ff-card-label>
+       <stButton> <button>0</button> </stButton>
+   */
+  .ff-card-marker { display: none; }
+
+  /* El container BORDE del st.container que sigue al marker — esto es la "card" */
+  .ff-card-marker + div [data-testid="stVerticalBlockBorderWrapper"] {
     background: #FFFFFF !important;
-    color: #3D2B30 !important;
     border: 1px solid #F0C9CE !important;
     border-radius: 18px !important;
     box-shadow: 0 2px 8px rgba(229, 135, 154, 0.08) !important;
-    padding: 18px 14px !important;
-    height: auto !important;
-    min-height: 110px !important;
-    white-space: pre-wrap !important;
-    text-align: left !important;
-    font-family: 'Quicksand', sans-serif !important;
-    font-weight: 600 !important;
-    font-size: 0.78rem !important;
-    line-height: 1.2 !important;
-    letter-spacing: 0.02em;
-    color: #8E5A65 !important;
-    display: flex !important;
-    flex-direction: column !important;
-    justify-content: space-between !important;
-    transition: all 0.15s ease !important;
+    padding: 18px 16px !important;
+    transition: all 0.15s ease;
+    height: 100%;
   }
-  .ff-metric-marker + div .stButton > button:hover {
+  /* Hover SOLO en cards clickeables */
+  .ff-card-marker[data-clickable="true"] + div [data-testid="stVerticalBlockBorderWrapper"]:hover {
     border-color: #E5879A !important;
     box-shadow: 0 4px 16px rgba(229, 135, 154, 0.18) !important;
     transform: translateY(-1px);
   }
-  /* La primera línea (emoji + label) chica + uppercase, la segunda (valor) grande Bowlby */
-  .ff-metric-marker + div .stButton > button p {
-    font-family: 'Bowlby One', sans-serif !important;
-    font-weight: 400 !important;
-    font-size: 1.9rem !important;
-    color: #3D2B30 !important;
-    text-transform: none !important;
-    line-height: 1 !important;
-    margin: 8px 0 0 0 !important;
-  }
-  /* Card "activa" — borde rose más fuerte + tinte blush */
-  .ff-metric-marker[data-active="true"] + div .stButton > button {
+  /* Card activa (filter aplicado) — tinte blush + borde rose */
+  .ff-card-marker[data-active="true"] + div [data-testid="stVerticalBlockBorderWrapper"] {
     background: #FBF0F2 !important;
     border-color: #E5879A !important;
     box-shadow: 0 4px 18px rgba(229, 135, 154, 0.25) !important;
   }
-  /* Ratio global (disabled button) — mismo look pero sin hover */
-  .ff-metric-marker + div .stButton > button[disabled] {
-    opacity: 1 !important;
-    cursor: default !important;
+
+  /* Label chico arriba (emoji + texto) */
+  .ff-card-label {
+    font-family: 'Quicksand', sans-serif !important;
+    font-weight: 600 !important;
+    font-size: 0.82rem !important;
+    color: #8E5A65 !important;
+    letter-spacing: 0.02em;
+    margin-bottom: 8px !important;
+    line-height: 1.2;
   }
-  .ff-metric-marker + div .stButton > button[disabled]:hover {
+
+  /* Valor grande clickeable — st.button dentro del marker */
+  .ff-card-marker + div .stButton > button {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    font-family: 'Bowlby One', sans-serif !important;
+    font-weight: 400 !important;
+    font-size: 2.1rem !important;
+    color: #3D2B30 !important;
+    line-height: 1 !important;
+    text-align: left !important;
+    justify-content: flex-start !important;
+    min-height: unset !important;
+    cursor: pointer;
+    transition: color 0.15s ease;
+  }
+  .ff-card-marker + div .stButton > button:hover {
+    background: transparent !important;
+    color: #722F37 !important;
     transform: none !important;
-    box-shadow: 0 2px 8px rgba(229, 135, 154, 0.08) !important;
-    border-color: #F0C9CE !important;
+  }
+  .ff-card-marker + div .stButton > button p {
+    font-family: 'Bowlby One', sans-serif !important;
+    font-size: 2.1rem !important;
+    color: inherit !important;
+    margin: 0 !important;
+  }
+
+  /* Valor NO clickeable (Ratio global) — mismo look, mismo color, sin hover state */
+  .ff-card-value-static {
+    font-family: 'Bowlby One', sans-serif !important;
+    font-weight: 400 !important;
+    font-size: 2.1rem !important;
+    color: #3D2B30 !important;
+    line-height: 1 !important;
+    margin: 0 !important;
   }
 
   /* Hide streamlit branding */
@@ -2265,56 +2289,55 @@ def page_collabs() -> None:
     if "collab_status_filter" not in st.session_state:
         st.session_state.collab_status_filter = "all"
 
-    # ── Cards clickeables estilizadas como metric cards ──
-    # Streamlit st.button no renderiza markdown (## se ve literal). Usamos
-    # HTML custom dentro del label NO — usamos un truco: el botón está oculto
-    # debajo de un st.markdown HTML que se ve bonito. El click pasa por encima.
-    # Approach final más simple: st.button con label limpio + CSS que estiliza
-    # el button para que parezca una metric card.
+    # ── Cards estilizadas como metric: container(border) + caption + button ──
+    # Approach: container(border=True) envuelve caption (label chico) + button
+    # (número grande). CSS oculta el border default del button, custom-style
+    # del button hace que el valor se vea grande con Bowlby One.
 
-    def _metric_card_btn(col, emoji: str, label: str, value, status_key: str):
-        """Card clickeable que se ve como st.metric."""
-        is_active = st.session_state.collab_status_filter == status_key
-        # Inyectamos clase CSS específica via wrapper para estilizar
+    def _metric_card(col, emoji: str, label: str, value: str, status_key: str = None,
+                      clickable: bool = True):
+        """Card uniforme con label chico arriba + valor grande abajo."""
+        is_active = (clickable and status_key and
+                      st.session_state.collab_status_filter == status_key)
         with col:
-            with st.container(border=False):
-                # Marcador HTML invisible para que CSS sepa qué container es
+            # Wrapper marker — CSS estiliza este container como card
+            st.markdown(
+                f'<div class="ff-card-marker" data-active="{str(is_active).lower()}"'
+                f' data-clickable="{str(clickable).lower()}"></div>',
+                unsafe_allow_html=True,
+            )
+            with st.container(border=True):
                 st.markdown(
-                    f'<div class="ff-metric-marker" data-active="{str(is_active).lower()}"></div>',
+                    f'<div class="ff-card-label">{emoji} {label}</div>',
                     unsafe_allow_html=True,
                 )
-                clicked = st.button(
-                    f"{emoji} {label}\n{value}",
-                    key=f"metric_btn_{status_key}",
-                    use_container_width=True,
-                    help=f"Click para filtrar Activas por '{status_key}' (toggle)",
-                )
-                if clicked:
-                    new = "all" if is_active else status_key
-                    st.session_state.collab_status_filter = new
-                    st.rerun()
+                if clickable and status_key:
+                    if st.button(
+                        str(value),
+                        key=f"card_btn_{status_key}",
+                        use_container_width=True,
+                        help=f"Click para filtrar Activas por '{status_key}' (toggle)",
+                    ):
+                        new = "all" if is_active else status_key
+                        st.session_state.collab_status_filter = new
+                        st.rerun()
+                else:
+                    # No clickeable: solo render del valor estilo button-look
+                    st.markdown(
+                        f'<div class="ff-card-value-static">{value}</div>',
+                        unsafe_allow_html=True,
+                    )
 
     m1, m2, m3, m4, m5 = st.columns(5)
-    _metric_card_btn(m1, "📦", t("collabs.pending"), int(stats["pending_n"] or 0), "pending")
-    _metric_card_btn(m2, "🚚", t("collabs.shipped"), int(stats["shipped_n"] or 0), "shipped")
-    _metric_card_btn(m3, "📸", t("collabs.tracking"), int(stats["posted_n"] or 0), "posted")
-    _metric_card_btn(m4, "✅", t("collabs.done"), int(stats["completed_n"] or 0), "completed")
+    _metric_card(m1, "📦", t("collabs.pending"), int(stats["pending_n"] or 0), "pending")
+    _metric_card(m2, "🚚", t("collabs.shipped"), int(stats["shipped_n"] or 0), "shipped")
+    _metric_card(m3, "📸", t("collabs.tracking"), int(stats["posted_n"] or 0), "posted")
+    _metric_card(m4, "✅", t("collabs.done"), int(stats["completed_n"] or 0), "completed")
     invest = float(stats["total_invest"] or 0)
     emv = float(stats["total_emv"] or 0)
     ratio_overall = (emv / invest) if invest > 0 else 0
-    # Ratio global = mismo look pero no clickeable. Usamos un button disabled.
-    with m5:
-        st.markdown(
-            '<div class="ff-metric-marker" data-active="false"></div>',
-            unsafe_allow_html=True,
-        )
-        st.button(
-            f"📊 {t('collabs.ratio_global')}\n{ratio_overall:.2f}:1" if ratio_overall
-                else f"📊 {t('collabs.ratio_global')}\n—",
-            key="metric_ratio_display", use_container_width=True,
-            disabled=True,
-            help=f"EMV total / inversión total · target {config.EMV_TARGET_RATIO}:1",
-        )
+    ratio_str = f"{ratio_overall:.2f}:1" if ratio_overall else "—"
+    _metric_card(m5, "📊", t("collabs.ratio_global"), ratio_str, clickable=False)
 
     # Indicador del filtro actual
     if st.session_state.collab_status_filter != "all":
