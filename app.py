@@ -2114,7 +2114,7 @@ COLLAB_TYPE_LABELS_SHORT = {
 def page_collabs() -> None:
     st.header(":material/handshake: Collabs")
 
-    # Quick stats arriba
+    # Quick stats arriba — CLICKEABLES, filtran la tab Activas
     stats = fetch_df("""
         SELECT
           SUM(CASE WHEN status='pending'   THEN 1 ELSE 0 END) AS pending_n,
@@ -2125,30 +2125,64 @@ def page_collabs() -> None:
           SUM(COALESCE(emv_mxn,0)) AS total_emv
         FROM collabs WHERE status != 'cancelled'
     """).iloc[0]
+
+    # Inicializar filter de status en session
+    if "collab_status_filter" not in st.session_state:
+        st.session_state.collab_status_filter = "all"
+
+    def _make_metric_btn(col, label: str, value, status_key: str, help_txt: str = ""):
+        """Botón estilizado como metric card. Click → cambia filtro + activa tab Activas."""
+        is_active = st.session_state.collab_status_filter == status_key
+        btn_label = f"{label}\n\n## {value}"
+        if col.button(btn_label, key=f"metric_btn_{status_key}",
+                       use_container_width=True,
+                       type="primary" if is_active else "secondary",
+                       help=help_txt or f"Click para filtrar Activas por '{status_key}'"):
+            # Si ya estaba activo, des-filtra (toggle)
+            new = "all" if is_active else status_key
+            st.session_state.collab_status_filter = new
+            st.session_state["_collab_active_tab"] = 1  # Tab "Activas"
+            st.rerun()
+
     m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric("📦 Pendiente", int(stats["pending_n"] or 0))
-    m2.metric("🚚 Enviadas", int(stats["shipped_n"] or 0))
-    m3.metric("📸 Tracking", int(stats["posted_n"] or 0))
-    m4.metric("✅ Done", int(stats["completed_n"] or 0))
+    _make_metric_btn(m1, "📦 Pendiente", int(stats["pending_n"] or 0), "pending")
+    _make_metric_btn(m2, "🚚 Enviadas", int(stats["shipped_n"] or 0), "shipped")
+    _make_metric_btn(m3, "📸 Tracking", int(stats["posted_n"] or 0), "posted")
+    _make_metric_btn(m4, "✅ Done", int(stats["completed_n"] or 0), "completed")
     invest = float(stats["total_invest"] or 0)
     emv = float(stats["total_emv"] or 0)
     ratio_overall = (emv / invest) if invest > 0 else 0
     m5.metric("Ratio global", f"{ratio_overall:.2f}:1" if ratio_overall else "—",
               help=f"EMV total / inversión total · target {config.EMV_TARGET_RATIO}:1")
 
+    # Indicador del filtro actual
+    if st.session_state.collab_status_filter != "all":
+        st.caption(
+            f"🔍 Filtrando Activas por **{st.session_state.collab_status_filter}** · "
+            "click la card de nuevo para quitar el filtro"
+        )
+
     st.divider()
 
-    tabs = st.tabs(["✏️ Crear nueva", "📋 Activas", "🎬 Tracking",
+    tabs = st.tabs(["✏️ Crear nueva", "📋 Activas", "📊 Dashboard",
                      "✅ Completadas", "📊 Por campaña"])
     with tabs[0]:
         _collab_create_form()
     with tabs[1]:
-        _collab_list_render(["pending", "shipped", "posted"], "active")
+        # Aplicar filtro de status si existe
+        filter_status = st.session_state.collab_status_filter
+        if filter_status == "all":
+            statuses_active = ["pending", "shipped", "posted"]
+        elif filter_status in ("pending", "shipped", "posted"):
+            statuses_active = [filter_status]
+        elif filter_status == "completed":
+            statuses_active = ["completed"]
+        else:
+            statuses_active = ["pending", "shipped", "posted"]
+        _collab_list_render(statuses_active, "active",
+                             default_expanded=(filter_status == "posted"))
     with tabs[2]:
-        _collab_list_render(["posted"], "tracking", default_expanded=True,
-                             empty_msg="No hay collabs en tracking activo. "
-                                       "Cuando alguna pase a status 'posted' "
-                                       "(con link agregado) aparecerá aquí.")
+        _collab_tracking_dashboard()
     with tabs[3]:
         _collab_list_render(["completed", "cancelled"], "done")
     with tabs[4]:
@@ -2627,6 +2661,116 @@ def _collab_actions(c: dict, queue_key: str) -> None:
                     "UPDATE collabs SET status='cancelled' WHERE id=?", (cid,)
                 )
             st.rerun()
+
+
+def _collab_tracking_dashboard() -> None:
+    """Vista agregada de todas las collabs activas en tracking (status=posted).
+    Muestra métricas globales + chart EMV diario sumado de todas."""
+    active = fetch_df("""
+        SELECT c.id, c.handle, c.campaign_name, c.expected_emv, c.emv_mxn,
+               c.emv_total_ratio, c.tracking_started_at, c.track_days,
+               c.cogs_pieces, c.shipping_cost, c.cash_fee,
+               cand.full_name
+        FROM collabs c
+        LEFT JOIN candidates cand ON c.handle = cand.handle
+        WHERE c.status = 'posted'
+        ORDER BY c.tracking_started_at
+    """)
+
+    if active.empty:
+        st.info(
+            "No hay collabs en tracking activo todavía. "
+            "Cuando una collab pase a estado 'posted' (con link agregado), "
+            "aparecerá aquí su evolución."
+        )
+        return
+
+    # ===== MÉTRICAS GLOBALES =====
+    n_active = len(active)
+    total_exp_emv = float(active["expected_emv"].fillna(0).sum())
+    total_real_emv = float(active["emv_mxn"].fillna(0).sum())
+    total_invest = float(
+        (active["cogs_pieces"].fillna(0) + active["shipping_cost"].fillna(0) +
+         active["cash_fee"].fillna(0)).sum()
+    )
+    avg_ratio = (total_real_emv / total_invest) if total_invest > 0 else 0
+    progress_pct = (total_real_emv / total_exp_emv * 100) if total_exp_emv > 0 else 0
+
+    mc1, mc2, mc3, mc4 = st.columns(4)
+    mc1.metric("Collabs activas", n_active)
+    mc2.metric("EMV proyectado total", f"${total_exp_emv:,.0f}")
+    mc3.metric("EMV real acumulado", f"${total_real_emv:,.0f}",
+                delta=f"{progress_pct:.0f}% del proyectado")
+    mc4.metric("Ratio promedio", f"{avg_ratio:.2f}:1",
+                delta=f"vs target {config.EMV_TARGET_RATIO}:1")
+
+    # ===== CHART: EMV diario agregado de TODAS las collabs en tracking =====
+    snaps = fetch_df("""
+        SELECT cps.collab_id, cps.captured_at, cps.likes, cps.comments,
+               cps.saves, cps.shares, cps.views,
+               c.handle, c.campaign_name, c.expected_emv
+        FROM collab_post_snapshots cps
+        JOIN collabs c ON cps.collab_id = c.id
+        WHERE c.status = 'posted'
+        ORDER BY cps.captured_at
+    """)
+
+    if snaps.empty:
+        st.warning(
+            "Hay collabs en posted pero ningún snapshot todavía. "
+            "Espera al cron diario (11 AM CDMX) o dale 'Actualizar métricas' a alguna."
+        )
+        return
+
+    st.markdown("### 📈 EMV diario agregado")
+    snaps["day"] = pd.to_datetime(snaps["captured_at"]).dt.date.astype(str)
+    # Por (día, collab_id), tomar último snapshot del día
+    latest = (snaps.sort_values("captured_at")
+                    .groupby(["day", "collab_id"]).last().reset_index())
+    mult = config.EMV_MULTIPLIERS
+    latest["emv_real"] = (
+        latest["likes"].fillna(0) * mult.get("like_mxn", 0.30) +
+        latest["comments"].fillna(0) * mult.get("comment_mxn", 3.0) +
+        latest["saves"].fillna(0) * mult.get("save_mxn", 5.0) +
+        latest["shares"].fillna(0) * mult.get("share_mxn", 6.0) +
+        latest["views"].fillna(0) * mult.get("view_mxn", 0.05)
+    )
+    daily = latest.groupby("day")["emv_real"].sum().reset_index()
+    chart_df = daily.set_index("day")[["emv_real"]].copy()
+    chart_df.columns = ["EMV real (todas las collabs)"]
+    chart_df["EMV proyectado total"] = total_exp_emv
+    st.line_chart(chart_df, height=280, use_container_width=True)
+
+    # ===== TABLA RESUMEN POR COLLAB =====
+    st.markdown("### Resumen por collab")
+    summary_rows = []
+    for _, c in active.iterrows():
+        cid = int(c["id"])
+        days = 0
+        if c.get("tracking_started_at"):
+            try:
+                started = pd.to_datetime(c["tracking_started_at"])
+                days = (pd.Timestamp.now(tz=started.tz) - started).days
+            except Exception:
+                pass
+        exp = float(c.get("expected_emv") or 0)
+        real = float(c.get("emv_mxn") or 0)
+        pct = (real / exp * 100) if exp > 0 else 0
+        summary_rows.append({
+            "Creadora": f"@{c['handle']}",
+            "Campaña": c["campaign_name"],
+            "Día": f"{days}/{int(c.get('track_days') or 14)}",
+            "EMV proyectado": f"${exp:,.0f}",
+            "EMV real": f"${real:,.0f}",
+            "Progreso": f"{pct:.0f}%",
+            "⚠️": "⚠️" if (days >= 7 and pct < 30) else "✓",
+        })
+    summary_df = pd.DataFrame(summary_rows)
+    st.dataframe(summary_df, use_container_width=True, hide_index=True)
+    st.caption(
+        "⚠️ aparece si al día 7+ el EMV real está por debajo del 30% del proyectado "
+        "(señal de underperformance temprano)."
+    )
 
 
 def _collab_by_campaign_view() -> None:
