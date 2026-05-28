@@ -2138,14 +2138,20 @@ def page_collabs() -> None:
 
     st.divider()
 
-    tabs = st.tabs(["✏️ Crear nueva", "📋 Activas", "✅ Completadas", "📊 Por campaña"])
+    tabs = st.tabs(["✏️ Crear nueva", "📋 Activas", "🎬 Tracking",
+                     "✅ Completadas", "📊 Por campaña"])
     with tabs[0]:
         _collab_create_form()
     with tabs[1]:
         _collab_list_render(["pending", "shipped", "posted"], "active")
     with tabs[2]:
-        _collab_list_render(["completed", "cancelled"], "done")
+        _collab_list_render(["posted"], "tracking", default_expanded=True,
+                             empty_msg="No hay collabs en tracking activo. "
+                                       "Cuando alguna pase a status 'posted' "
+                                       "(con link agregado) aparecerá aquí.")
     with tabs[3]:
+        _collab_list_render(["completed", "cancelled"], "done")
+    with tabs[4]:
         _collab_by_campaign_view()
 
 
@@ -2263,13 +2269,16 @@ def _collab_create_form() -> None:
                     "después agrega los **links de posts** cuando publique.")
 
 
-def _collab_list_render(statuses: List[str], queue_key: str) -> None:
+def _collab_list_render(statuses: List[str], queue_key: str,
+                         default_expanded: bool = False,
+                         empty_msg: str = "No hay collabs en este estado.") -> None:
     """Lista expandible de collabs filtrada por status."""
     placeholders = ",".join("?" * len(statuses))
     collabs = fetch_df(f"""
         SELECT c.id, c.handle, c.campaign_name, c.campaign_type, c.launch_date,
                c.status, c.cogs_pieces, c.shipping_cost, c.cash_fee,
-               c.emv_mxn, c.emv_cash_ratio, c.emv_total_ratio,
+               c.emv_mxn, c.emv_cash_ratio, c.emv_total_ratio, c.expected_emv,
+               c.expected_content,
                c.tracking_started_at, c.notes, c.last_recalc_at, c.track_days,
                c.created_at, cand.full_name, cand.profile_pic_url, cand.followers
         FROM collabs c
@@ -2279,7 +2288,7 @@ def _collab_list_render(statuses: List[str], queue_key: str) -> None:
     """, tuple(statuses))
 
     if collabs.empty:
-        st.info("No hay collabs en este estado.")
+        st.info(empty_msg)
         return
 
     # Filtros
@@ -2297,7 +2306,7 @@ def _collab_list_render(statuses: List[str], queue_key: str) -> None:
     st.caption(f"**{len(collabs)}** collabs en vista")
 
     for _, c in collabs.iterrows():
-        _collab_card(c.to_dict(), queue_key)
+        _collab_card(c.to_dict(), queue_key, default_expanded=default_expanded)
 
 
 def _collab_evolution_chart(c: dict) -> None:
@@ -2369,7 +2378,7 @@ def _collab_evolution_chart(c: dict) -> None:
         st.dataframe(display_df, use_container_width=True, hide_index=True)
 
 
-def _collab_card(c: dict, queue_key: str) -> None:
+def _collab_card(c: dict, queue_key: str, default_expanded: bool = False) -> None:
     """Card expandible de UNA collab."""
     status_label = COLLAB_STATUS_LABELS.get(c["status"], c["status"])
     type_label = COLLAB_TYPE_LABELS_SHORT.get(c["campaign_type"], c["campaign_type"])
@@ -2388,7 +2397,7 @@ def _collab_card(c: dict, queue_key: str) -> None:
         ratio_emoji = "✅" if total_ratio >= config.EMV_TARGET_RATIO else "⚠️"
         header_text += f" · EMV ${emv:,.0f} · ratio {total_ratio:.2f}:1 {ratio_emoji}"
 
-    with st.expander(header_text, expanded=False):
+    with st.expander(header_text, expanded=default_expanded):
         # Pic + info hero
         info_c1, info_c2 = st.columns([1, 4])
         with info_c1:
