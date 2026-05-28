@@ -599,6 +599,18 @@ def _get_libsql_client():
     return client
 
 
+def close_libsql() -> None:
+    """Cierra el cliente libsql cacheado. Llamar al final de scripts headless
+    para evitar que el proceso quede colgado por threads internos del cliente."""
+    client = _libsql_client_cache.get("client")
+    if client is not None:
+        try:
+            client.close()
+        except Exception:
+            pass
+        _libsql_client_cache["client"] = None
+
+
 def connect():
     """Get a connection with sane defaults.
 

@@ -113,4 +113,14 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    finally:
+        # Cierra el libsql client para que el proceso pueda salir.
+        # Sin esto, threads internos del cliente HTTP mantienen el proceso vivo
+        # hasta el timeout (30min en GH Actions = canceled).
+        try:
+            db.close_libsql()
+        except Exception:
+            pass
+        sys.exit(0)
