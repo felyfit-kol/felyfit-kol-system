@@ -3329,11 +3329,14 @@ def page_dashboard() -> None:
         delta=_delta_num(latest["following"], previous["following"] if previous is not None else None)
             if previous is not None else None,
     )
+    # EMV total acumulado de todas las collabs (no depende de account_snapshots)
+    emv_total_row = fetch_df(
+        "SELECT COALESCE(SUM(emv_mxn), 0) AS total FROM collabs WHERE emv_mxn IS NOT NULL"
+    )
+    emv_total = float(emv_total_row.iloc[0]["total"]) if not emv_total_row.empty else 0.0
     mc3.metric(
-        "Posts totales",
-        f"{int(latest['posts_count'] or 0):,}",
-        delta=_delta_num(latest["posts_count"], previous["posts_count"] if previous is not None else None)
-            if previous is not None else None,
+        "EMV total",
+        f"${emv_total:,.0f}",
     )
     er_now = float(latest["engagement_rate"] or 0) * 100
     er_delta = None
@@ -3402,45 +3405,58 @@ def page_dashboard() -> None:
     weekly_er["ER %"] = (weekly_er["engagement_rate"] * 100).round(2)
     # Si todos los ER son NaN (backfill histórico sin métrica), skip
     if weekly_er["ER %"].notna().any():
-        # Solo graficar semanas con valor
-        weekly_er_clean = weekly_er.dropna(subset=["ER %"])
+        weekly_er_clean = weekly_er.dropna(subset=["ER %"]).reset_index(drop=True)
+        # Delta semanal (pp = percentage points)
+        _er_diff = weekly_er_clean["ER %"].diff()
+        weekly_er_clean["er_delta_lbl"] = _er_diff.apply(
+            lambda d: "" if pd.isna(d) or d == 0 else f"{d:+.2f}pp"
+        )
         st.altair_chart(
-            ff_bar_chart(weekly_er_clean, "week_label", "ER %",
-                          x_title="Semana", y_title="ER %", height=200,
-                          label_format=".2f"),
+            ff_line_chart(weekly_er_clean, "week_label", "ER %",
+                          x_title="Semana", y_title="ER %", height=240,
+                          label_format=".2f",
+                          secondary_label_col="er_delta_lbl"),
             use_container_width=True,
         )
     else:
-        st.caption("_Sin data de engagement rate todavía — se llenará en los próximos snapshots semanales._")
+        st.caption(
+            "_Sin data histórica de engagement rate — se captura automáticamente "
+            "cada lunes 11 AM CDMX vía el cron weekly-account-snapshot._"
+        )
 
-    st.markdown("### 📝 Posts publicados")
-    # Posts acumulados — mostramos delta semanal (publicados esa semana).
-    # Si todos los posts_count son NaN (backfill histórico), skip el chart.
-    weekly_posts = weekly.copy()
-    if not weekly_posts["posts_count"].notna().any():
-        st.caption("_Sin data de posts publicados todavía — se llenará en los próximos snapshots semanales._")
-    elif weekly_posts["posts_count"].notna().sum() == 1:
-        # Solo 1 semana con data — mostrar total acumulado
-        weekly_posts_clean = weekly_posts.dropna(subset=["posts_count"]).copy()
-        weekly_posts_clean["posts_count"] = weekly_posts_clean["posts_count"].astype(int)
-        st.altair_chart(
-            ff_bar_chart(weekly_posts_clean, "week_label", "posts_count",
-                          x_title="Semana", y_title="Posts totales",
-                          height=200),
-            use_container_width=True,
+    # ── EMV semanal (line chart) ──
+    # Agrupar collabs por la semana de launch_date y sumar EMV.
+    st.markdown("### 💰 EMV generado")
+    emv_df = fetch_df(
+        "SELECT launch_date, emv_mxn FROM collabs "
+        "WHERE launch_date IS NOT NULL AND emv_mxn IS NOT NULL"
+    )
+    if emv_df.empty:
+        st.caption(
+            "_Sin EMV registrado todavía — aparece al cerrar collabs con métricas_."
         )
     else:
-        weekly_posts_clean = weekly_posts.dropna(subset=["posts_count"]).copy()
-        weekly_posts_clean["posts_delta"] = (
-            weekly_posts_clean["posts_count"].diff()
-            .fillna(weekly_posts_clean["posts_count"])
-            .astype(int)
+        emv_df["launch_date"] = pd.to_datetime(emv_df["launch_date"], errors="coerce")
+        emv_df = emv_df.dropna(subset=["launch_date"])
+        emv_df["week_label"] = emv_df["launch_date"].dt.strftime("W%V")
+        emv_weekly = (
+            emv_df.sort_values("launch_date")
+                  .groupby("week_label", sort=False)
+                  .agg(emv_mxn=("emv_mxn", "sum"),
+                       launch_date=("launch_date", "first"))
+                  .reset_index()
+                  .sort_values("launch_date")
+        )
+        emv_weekly["emv_mxn"] = emv_weekly["emv_mxn"].round(0)
+        _emv_diff = emv_weekly["emv_mxn"].diff()
+        emv_weekly["emv_delta_lbl"] = _emv_diff.apply(
+            lambda d: "" if pd.isna(d) or d == 0 else f"{int(d):+,d}"
         )
         st.altair_chart(
-            ff_bar_chart(weekly_posts_clean, "week_label", "posts_delta",
-                          x_title="Semana",
-                          y_title="Posts nuevos esa semana",
-                          height=200),
+            ff_line_chart(emv_weekly, "week_label", "emv_mxn",
+                          x_title="Semana", y_title="EMV (MXN)", height=240,
+                          label_format="$,.0f",
+                          secondary_label_col="emv_delta_lbl"),
             use_container_width=True,
         )
 
