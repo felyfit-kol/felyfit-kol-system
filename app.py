@@ -3501,6 +3501,117 @@ def page_dashboard() -> None:
             use_container_width=True,
         )
 
+    # ── EMV por collab activa (multi-serie con colores) ──
+    st.markdown("### 🤝 EMV por collab activa")
+    active_emv = fetch_df("""
+        SELECT s.collab_id, s.captured_at,
+               s.likes, s.comments, s.saves, s.shares, s.views,
+               c.handle, c.campaign_name
+        FROM collab_post_snapshots s
+        JOIN collabs c ON c.id = s.collab_id
+        WHERE c.status IN ('posted', 'active_tracking')
+        ORDER BY s.captured_at
+    """)
+    if active_emv.empty:
+        st.caption(
+            "_Sin collabs activas con snapshots — el chart aparece cuando "
+            "hay collabs en `posted` con posts vinculados y el cron diario "
+            "ya capturó al menos un snapshot._"
+        )
+    else:
+        active_emv["captured_at"] = pd.to_datetime(
+            active_emv["captured_at"], errors="coerce"
+        )
+        active_emv["day"] = active_emv["captured_at"].dt.date.astype(str)
+        # Por (collab_id, day): último snapshot del día
+        per_day = (
+            active_emv.sort_values("captured_at")
+                       .groupby(["collab_id", "day"]).last().reset_index()
+        )
+        mult = config.EMV_MULTIPLIERS
+        per_day["emv"] = (
+            per_day["likes"].fillna(0)    * mult.get("like_mxn", 0.30) +
+            per_day["comments"].fillna(0) * mult.get("comment_mxn", 3.0) +
+            per_day["saves"].fillna(0)    * mult.get("save_mxn", 5.0) +
+            per_day["shares"].fillna(0)   * mult.get("share_mxn", 6.0) +
+            per_day["views"].fillna(0)    * mult.get("view_mxn", 0.05)
+        ).round(0)
+        # Label legible por serie: "@handle"
+        per_day["creator"] = "@" + per_day["handle"]
+
+        # Reindexar para que cada collab tenga una fila por cada día del rango
+        # con carry-forward (así el chart muestra hasta hoy aunque el cron no haya
+        # actualizado todas las collabs en el mismo día).
+        from datetime import date as _date
+        per_day["day_dt"] = pd.to_datetime(per_day["day"]).dt.date
+        start_day = per_day["day_dt"].min()
+        end_day = _date.today()
+        full_range = pd.date_range(start=start_day, end=end_day, freq="D").date
+        filled = []
+        for cid, grp in per_day.groupby("collab_id"):
+            handle = grp["creator"].iloc[0]
+            g = (grp.set_index("day_dt")[["emv"]]
+                    .reindex(full_range).ffill()
+                    .rename_axis("day_dt").reset_index())
+            g["creator"] = handle
+            filled.append(g)
+        plot_df = pd.concat(filled, ignore_index=True)
+        plot_df["day"] = plot_df["day_dt"].astype(str)
+        plot_df = plot_df.dropna(subset=["emv"])
+
+        # Paleta FelyFit categórica — distintos tonos burgundy/rose por collab
+        palette = ["#722F37", "#E5879A", "#C9586A", "#8E5A65",
+                   "#B07A82", "#F0C9CE", "#5C1F2A", "#A4546A"]
+        creators_order = list(plot_df["creator"].drop_duplicates())
+
+        # Calcular dominio Y dinámico (no zero) para mostrar variación
+        v_min = float(plot_df["emv"].min())
+        v_max = float(plot_df["emv"].max())
+        rng = max(1.0, v_max - v_min)
+        y_min_dom = max(0.0, v_min - rng * 0.15)
+        y_max_dom = v_max + rng * 0.18
+
+        base = alt.Chart(plot_df).encode(
+            x=alt.X("day:O", title="Día",
+                     axis=alt.Axis(labelAngle=0, labelColor="#8E5A65",
+                                   labelFontSize=10, labelFont="Quicksand",
+                                   labelFontWeight=600, titleColor="#8E5A65",
+                                   domainColor="#F0C9CE", tickColor="#F0C9CE")),
+            y=alt.Y("emv:Q", title="EMV (MXN)",
+                     scale=alt.Scale(domain=[y_min_dom, y_max_dom], zero=False),
+                     axis=alt.Axis(labelColor="#8E5A65", labelFontSize=10,
+                                   labelFont="Quicksand", titleColor="#8E5A65",
+                                   grid=True, gridColor="#F5DDE0",
+                                   gridOpacity=0.6, domainOpacity=0,
+                                   tickOpacity=0)),
+            color=alt.Color(
+                "creator:N",
+                scale=alt.Scale(domain=creators_order,
+                                 range=palette[:len(creators_order)]),
+                legend=alt.Legend(title=None, labelFont="Quicksand",
+                                   labelColor="#722F37", labelFontSize=11,
+                                   symbolSize=120, orient="top"),
+            ),
+        )
+        lines = base.mark_line(strokeWidth=3, interpolate="monotone")
+        points = base.mark_circle(size=90, stroke="#FFFFFF", strokeWidth=2).encode(
+            tooltip=[
+                alt.Tooltip("creator:N", title="Collab"),
+                alt.Tooltip("day:O", title="Día"),
+                alt.Tooltip("emv:Q", title="EMV", format="$,.0f"),
+            ],
+        )
+        st.altair_chart(
+            (lines + points)
+                .properties(height=300)
+                .configure_view(strokeWidth=0),
+            use_container_width=True,
+        )
+        st.caption(
+            f"_{len(creators_order)} collab(s) activa(s) · "
+            "snapshots diarios via cron 11 AM CDMX_"
+        )
+
     # ── Tabla con histórico completo ──
     with st.expander(f"📋 Histórico de snapshots ({len(snaps)} filas)",
                       expanded=False):
