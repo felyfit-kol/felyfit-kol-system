@@ -3280,30 +3280,44 @@ def page_dashboard() -> None:
     st.markdown("### 💬 Engagement Rate")
     weekly_er = weekly.copy()
     weekly_er["ER %"] = (weekly_er["engagement_rate"] * 100).round(2)
-    st.altair_chart(
-        ff_bar_chart(weekly_er, "week_label", "ER %",
-                      x_title="Semana", y_title="ER %", height=200,
-                      label_format=".2f"),
-        use_container_width=True,
-    )
+    # Si todos los ER son NaN (backfill histórico sin métrica), skip
+    if weekly_er["ER %"].notna().any():
+        # Solo graficar semanas con valor
+        weekly_er_clean = weekly_er.dropna(subset=["ER %"])
+        st.altair_chart(
+            ff_bar_chart(weekly_er_clean, "week_label", "ER %",
+                          x_title="Semana", y_title="ER %", height=200,
+                          label_format=".2f"),
+            use_container_width=True,
+        )
+    else:
+        st.caption("_Sin data de engagement rate todavía — se llenará en los próximos snapshots semanales._")
 
     st.markdown("### 📝 Posts publicados")
-    # Posts acumulados — mostramos delta semanal (publicados esa semana)
+    # Posts acumulados — mostramos delta semanal (publicados esa semana).
+    # Si todos los posts_count son NaN (backfill histórico), skip el chart.
     weekly_posts = weekly.copy()
-    weekly_posts["posts_delta"] = weekly_posts["posts_count"].diff().fillna(
-        weekly_posts["posts_count"]
-    ).astype(int)
-    if len(weekly_posts) == 1:
-        # Solo 1 semana — mostrar total acumulado
+    if not weekly_posts["posts_count"].notna().any():
+        st.caption("_Sin data de posts publicados todavía — se llenará en los próximos snapshots semanales._")
+    elif weekly_posts["posts_count"].notna().sum() == 1:
+        # Solo 1 semana con data — mostrar total acumulado
+        weekly_posts_clean = weekly_posts.dropna(subset=["posts_count"]).copy()
+        weekly_posts_clean["posts_count"] = weekly_posts_clean["posts_count"].astype(int)
         st.altair_chart(
-            ff_bar_chart(weekly_posts, "week_label", "posts_count",
+            ff_bar_chart(weekly_posts_clean, "week_label", "posts_count",
                           x_title="Semana", y_title="Posts totales",
                           height=200),
             use_container_width=True,
         )
     else:
+        weekly_posts_clean = weekly_posts.dropna(subset=["posts_count"]).copy()
+        weekly_posts_clean["posts_delta"] = (
+            weekly_posts_clean["posts_count"].diff()
+            .fillna(weekly_posts_clean["posts_count"])
+            .astype(int)
+        )
         st.altair_chart(
-            ff_bar_chart(weekly_posts, "week_label", "posts_delta",
+            ff_bar_chart(weekly_posts_clean, "week_label", "posts_delta",
                           x_title="Semana",
                           y_title="Posts nuevos esa semana",
                           height=200),
