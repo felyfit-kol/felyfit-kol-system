@@ -545,10 +545,10 @@ def ff_line_chart(
     secondary_label_col: str | None = None,
     y_min: float | None = None,
 ) -> alt.Chart:
-    """Line chart con paleta FelyFit (línea burgundy + área gradient + puntos).
+    """Line chart con paleta FelyFit (línea burgundy + puntos).
     Eje Y arranca debajo del mínimo (no en 0) para mostrar crecimiento con impacto.
     """
-    y_values = df[y_col].dropna()
+    y_values = pd.to_numeric(df[y_col], errors="coerce").dropna()
     if y_values.empty:
         y_min_calc, y_max_calc = 0.0, 1.0
     else:
@@ -560,70 +560,64 @@ def ff_line_chart(
             y_min_calc = max(0.0, v_min - rng * 0.15)
         y_max_calc = v_max + rng * 0.18  # margen arriba para que quepan los labels
 
-    # Base chart: define encodings UNA vez para que todos los layers compartan
-    # exactamente la misma escala (clave para que la línea y los labels se
-    # posicionen consistentemente).
-    base = alt.Chart(df).encode(
-        x=alt.X(
-            f"{x_col}:O",
-            title=x_title,
-            axis=alt.Axis(
-                labelAngle=0, labelColor="#8E5A65", labelFontSize=10,
-                labelFont="Quicksand", labelFontWeight=600,
-                titleColor="#8E5A65", domainColor="#F0C9CE", tickColor="#F0C9CE",
-            ),
+    x_enc = alt.X(
+        f"{x_col}:O",
+        title=x_title,
+        axis=alt.Axis(
+            labelAngle=0, labelColor="#8E5A65", labelFontSize=10,
+            labelFont="Quicksand", labelFontWeight=600,
+            titleColor="#8E5A65", domainColor="#F0C9CE", tickColor="#F0C9CE",
         ),
-        y=alt.Y(
-            f"{y_col}:Q",
-            title=y_title,
-            scale=alt.Scale(domain=[y_min_calc, y_max_calc], nice=False, zero=False),
-            axis=alt.Axis(
-                labelColor="#8E5A65", labelFontSize=10, labelFont="Quicksand",
-                titleColor="#8E5A65",
-                grid=True, gridColor="#F5DDE0", gridOpacity=0.6,
-                domainOpacity=0, tickOpacity=0,
-            ),
+    )
+    y_enc = alt.Y(
+        f"{y_col}:Q",
+        title=y_title,
+        scale=alt.Scale(domain=[y_min_calc, y_max_calc], zero=False, clamp=False),
+        axis=alt.Axis(
+            labelColor="#8E5A65", labelFontSize=10, labelFont="Quicksand",
+            titleColor="#8E5A65",
+            grid=True, gridColor="#F5DDE0", gridOpacity=0.6,
+            domainOpacity=0, tickOpacity=0,
         ),
     )
 
-    area = base.mark_area(
-        color=alt.Gradient(
-            gradient="linear",
-            stops=[
-                alt.GradientStop(color="#FBE9EC", offset=0),
-                alt.GradientStop(color="#E5879A", offset=1),
-            ],
-            x1=0, y1=1, x2=0, y2=0,
-        ),
-        opacity=0.45,
-    )
-    line = base.mark_line(color="#722F37", strokeWidth=2.5, interpolate="monotone")
-    points = base.mark_circle(
-        size=85, color="#722F37", opacity=1,
-        stroke="#FFFFFF", strokeWidth=1.5,
+    line = alt.Chart(df).mark_line(
+        color="#722F37", strokeWidth=3, point=False,
+    ).encode(x=x_enc, y=y_enc)
+
+    points = alt.Chart(df).mark_circle(
+        size=110, color="#722F37", opacity=1,
+        stroke="#FFFFFF", strokeWidth=2,
     ).encode(
+        x=x_enc, y=y_enc,
         tooltip=[
             alt.Tooltip(f"{x_col}:O", title=x_title or x_col),
             alt.Tooltip(f"{y_col}:Q", title=y_title or y_col, format=label_format),
         ],
     )
 
-    layers = [area, line, points]
+    layers = [line, points]
 
     if show_labels:
-        labels = base.mark_text(
+        labels = alt.Chart(df).mark_text(
             align="center", baseline="bottom", dy=-10,
             fontSize=10, fontWeight="bold",
             color="#722F37", font="Bowlby One",
-        ).encode(text=alt.Text(f"{y_col}:Q", format=label_format))
+        ).encode(
+            x=x_enc, y=y_enc,
+            text=alt.Text(f"{y_col}:Q", format=label_format),
+        )
         layers.append(labels)
 
         if secondary_label_col:
-            secondary = base.mark_text(
+            secondary = alt.Chart(df).mark_text(
                 align="center", baseline="bottom", dy=-26,
                 fontSize=9, fontWeight="normal",
                 color="#B07A82", font="Quicksand",
-            ).encode(text=alt.Text(f"{secondary_label_col}:N"))
+            ).encode(
+                x=x_enc, y=y_enc,
+                text=alt.Text(f"{secondary_label_col}:N"),
+            )
             layers.append(secondary)
 
     return alt.layer(*layers).properties(height=height).configure_view(strokeWidth=0)
