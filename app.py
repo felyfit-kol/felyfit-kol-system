@@ -3303,9 +3303,15 @@ def page_dashboard() -> None:
         snaps[col] = pd.to_numeric(snaps[col], errors="coerce")
 
     latest = snaps.iloc[-1]
-    previous = snaps.iloc[-2] if len(snaps) >= 2 else None
+    # "Hace una semana": buscar el snapshot más cercano a (latest - 7 días).
+    # Esto da un delta semanal significativo en lugar de comparar con el
+    # snapshot inmediatamente anterior (que podría ser de un día atrás y
+    # mezclar fuentes IG Insights vs Apify scraper).
+    one_week_ago_target = latest["captured_at"] - pd.Timedelta(days=7)
+    older_snaps = snaps[snaps["captured_at"] <= one_week_ago_target]
+    week_ago = older_snaps.iloc[-1] if not older_snaps.empty else None
 
-    # ── Métricas actuales con delta vs snapshot anterior ──
+    # ── Métricas actuales con delta vs snapshot de hace ~7 días ──
     def _delta_num(curr, prev, fmt: str = "{:+,.0f}"):
         if prev is None or pd.isna(prev):
             return None
@@ -3320,14 +3326,16 @@ def page_dashboard() -> None:
     mc1.metric(
         "Followers",
         f"{int(latest['followers'] or 0):,}",
-        delta=_delta_num(latest["followers"], previous["followers"] if previous is not None else None)
-            if previous is not None else None,
+        delta=_delta_num(latest["followers"], week_ago["followers"] if week_ago is not None else None)
+            if week_ago is not None else None,
+        help="Cambio vs hace 7 días",
     )
     mc2.metric(
         "Following",
         f"{int(latest['following'] or 0):,}",
-        delta=_delta_num(latest["following"], previous["following"] if previous is not None else None)
-            if previous is not None else None,
+        delta=_delta_num(latest["following"], week_ago["following"] if week_ago is not None else None)
+            if week_ago is not None else None,
+        help="Cambio vs hace 7 días",
     )
     # EMV total acumulado de todas las collabs (no depende de account_snapshots)
     emv_total_row = fetch_df(
@@ -3340,12 +3348,13 @@ def page_dashboard() -> None:
     )
     er_now = float(latest["engagement_rate"] or 0) * 100
     er_delta = None
-    if previous is not None and not pd.isna(previous["engagement_rate"]):
-        er_prev = float(previous["engagement_rate"]) * 100
+    if week_ago is not None and not pd.isna(week_ago["engagement_rate"]):
+        er_prev = float(week_ago["engagement_rate"]) * 100
         d = er_now - er_prev
         if d != 0:
             er_delta = f"{d:+.2f}pp"
-    mc4.metric("ER actual", f"{er_now:.2f}%", delta=er_delta)
+    mc4.metric("ER actual", f"{er_now:.2f}%", delta=er_delta,
+                help="Cambio vs hace 7 días")
 
     st.caption(
         f"Último snapshot: {latest['captured_at'].strftime('%Y-%m-%d %H:%M')} · "
