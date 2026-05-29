@@ -2768,12 +2768,18 @@ def _collab_evolution_chart(c: dict) -> None:
         daily["views"].fillna(0) * mult.get("view_mxn", 0.05)
     )
 
-    # Chart de EMV día a día — bar chart burgundy con labels
+    # Chart de EMV día a día — line chart burgundy (mismo formato dashboard)
     exp_emv = float(c.get("expected_emv") or 0)
     daily["EMV"] = daily["EMV"].round(0)
+    _emv_diff = daily["EMV"].diff()
+    daily["emv_delta_lbl"] = _emv_diff.apply(
+        lambda d: "" if pd.isna(d) or d == 0 else f"{int(d):+,d}"
+    )
     st.altair_chart(
-        ff_bar_chart(daily, "day", "EMV", x_title="Día",
-                      y_title="EMV ($)", height=220),
+        ff_line_chart(daily, "day", "EMV", x_title="Día",
+                      y_title="EMV ($)", height=260,
+                      label_format="$,.0f",
+                      secondary_label_col="emv_delta_lbl"),
         use_container_width=True,
     )
     if exp_emv > 0:
@@ -3141,10 +3147,16 @@ def _collab_tracking_dashboard() -> None:
     )
     daily = latest.groupby("day")["emv_real"].sum().reset_index()
     daily["emv_real"] = daily["emv_real"].round(0)
+    _emv_diff_agg = daily["emv_real"].diff()
+    daily["emv_delta_lbl"] = _emv_diff_agg.apply(
+        lambda d: "" if pd.isna(d) or d == 0 else f"{int(d):+,d}"
+    )
     st.altair_chart(
-        ff_bar_chart(daily, "day", "emv_real",
+        ff_line_chart(daily, "day", "emv_real",
                       x_title="Día", y_title="EMV real ($)",
-                      height=240),
+                      height=280,
+                      label_format="$,.0f",
+                      secondary_label_col="emv_delta_lbl"),
         use_container_width=True,
     )
     st.caption(f"🎯 EMV proyectado total: **${total_exp_emv:,.0f}**")
