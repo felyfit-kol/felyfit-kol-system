@@ -3147,6 +3147,26 @@ def _collab_tracking_dashboard() -> None:
     )
     daily = latest.groupby("day")["emv_real"].sum().reset_index()
     daily["emv_real"] = daily["emv_real"].round(0)
+
+    # Rellenar días faltantes desde el primer snapshot hasta HOY (CDMX),
+    # carry-forward del último valor conocido. Así el chart siempre llega
+    # al día actual aunque el cron no haya corrido todavía.
+    from datetime import date as _date, timedelta as _td
+    daily["day_dt"] = pd.to_datetime(daily["day"]).dt.date
+    start_day = daily["day_dt"].min()
+    end_day = _date.today()
+    if end_day > daily["day_dt"].max():
+        full_range = pd.date_range(start=start_day, end=end_day, freq="D").date
+        daily = (
+            daily.set_index("day_dt")
+                 .reindex(full_range)
+                 .ffill()  # carry forward el último valor conocido
+                 .rename_axis("day_dt")
+                 .reset_index()
+        )
+        daily["day"] = daily["day_dt"].astype(str)
+        daily["emv_real"] = daily["emv_real"].fillna(0).round(0)
+
     _emv_diff_agg = daily["emv_real"].diff()
     daily["emv_delta_lbl"] = _emv_diff_agg.apply(
         lambda d: "" if pd.isna(d) or d == 0 else f"{int(d):+,d}"
