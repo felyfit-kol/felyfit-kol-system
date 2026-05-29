@@ -537,6 +537,113 @@ def ff_bar_chart(
     return chart.properties(height=height).configure_view(strokeWidth=0)
 
 
+def ff_line_chart(
+    df: pd.DataFrame, x_col: str, y_col: str,
+    *, x_title: str = None, y_title: str = None,
+    height: int = 280, label_format: str = ",.0f",
+    show_labels: bool = True,
+    secondary_label_col: str | None = None,
+    y_min: float | None = None,
+) -> alt.Chart:
+    """Line chart con paleta FelyFit (línea burgundy + área gradient + puntos).
+    Diseñado para mostrar tendencias de crecimiento con impacto visual.
+
+    El eje Y NO empieza en 0 por default — empieza un poco debajo del mínimo
+    para que el crecimiento se vea dramático. Override con `y_min`.
+    """
+    # Calcular dominio del eje Y. Si los valores no varían mucho contra su
+    # magnitud (típico de followers), empezar muy debajo de 0 sería plano.
+    # Mejor: arrancar ~15% del rango debajo del mínimo, redondeado a "nice".
+    y_values = df[y_col].dropna()
+    if y_values.empty:
+        y_min_calc, y_max_calc = 0, 1
+    else:
+        v_min, v_max = float(y_values.min()), float(y_values.max())
+        if y_min is not None:
+            y_min_calc = y_min
+        else:
+            pad = max(50, (v_max - v_min) * 0.15)
+            y_min_calc = int((v_min - pad) // 100 * 100)
+            y_min_calc = max(0, y_min_calc)
+        # Top: redondear hacia arriba al siguiente "nice" (centena)
+        top_pad = max(50, (v_max - v_min) * 0.10)
+        y_max_calc = int(((v_max + top_pad) // 100 + 1) * 100)
+
+    y_scale = alt.Scale(domain=[y_min_calc, y_max_calc], nice=False)
+
+    x_axis = alt.X(
+        f"{x_col}:O",
+        title=x_title,
+        axis=alt.Axis(
+            labelAngle=0, labelColor="#8E5A65", labelFontSize=10,
+            labelFont="Quicksand", labelFontWeight=600,
+            titleColor="#8E5A65", domainColor="#F0C9CE", tickColor="#F0C9CE",
+        ),
+    )
+    y_axis = alt.Y(
+        f"{y_col}:Q",
+        title=y_title, scale=y_scale,
+        axis=alt.Axis(
+            labelColor="#8E5A65", labelFontSize=10, labelFont="Quicksand",
+            titleColor="#8E5A65",
+            grid=True, gridColor="#F5DDE0", gridOpacity=0.6,
+            domainOpacity=0, tickOpacity=0,
+        ),
+    )
+
+    # Área con gradient burgundy
+    area = alt.Chart(df).mark_area(
+        line={"color": "#722F37", "strokeWidth": 2.5},
+        color=alt.Gradient(
+            gradient="linear",
+            stops=[
+                alt.GradientStop(color="#F5DDE0", offset=0),    # rose suave abajo
+                alt.GradientStop(color="#E5879A", offset=1),    # rose más fuerte arriba
+            ],
+            x1=0, y1=1, x2=0, y2=0,
+        ),
+        opacity=0.55,
+    ).encode(
+        x=x_axis, y=y_axis,
+        tooltip=[
+            alt.Tooltip(f"{x_col}:O", title=x_title or x_col),
+            alt.Tooltip(f"{y_col}:Q", title=y_title or y_col, format=label_format),
+        ],
+    )
+
+    # Puntos en cada vértice (más visibles que la línea sola)
+    points = alt.Chart(df).mark_circle(
+        size=80, color="#722F37", opacity=1,
+        stroke="#FFFFFF", strokeWidth=1.5,
+    ).encode(x=x_axis, y=y_axis)
+
+    layers = [area, points]
+
+    if show_labels:
+        labels = alt.Chart(df).mark_text(
+            align="center", baseline="bottom", dy=-10,
+            fontSize=10, fontWeight="bold",
+            color="#722F37", font="Bowlby One",
+        ).encode(
+            x=x_axis, y=y_axis,
+            text=alt.Text(f"{y_col}:Q", format=label_format),
+        )
+        layers.append(labels)
+
+        if secondary_label_col:
+            secondary = alt.Chart(df).mark_text(
+                align="center", baseline="bottom", dy=-24,
+                fontSize=9, fontWeight="normal",
+                color="#B07A82", font="Quicksand",
+            ).encode(
+                x=x_axis, y=y_axis,
+                text=alt.Text(f"{secondary_label_col}:N"),
+            )
+            layers.append(secondary)
+
+    return alt.layer(*layers).properties(height=height).configure_view(strokeWidth=0)
+
+
 def fetch_df(sql: str, params: tuple = ()) -> pd.DataFrame:
     try:
         with db.connect() as conn:
@@ -3301,9 +3408,12 @@ def page_dashboard() -> None:
             return ""
         return f"{int(d):+,d}"
     weekly_foll["followers_delta_lbl"] = _diff.apply(_fmt_delta)
+    # Line chart con área burgundy — el eje Y NO empieza en 0 para que el
+    # crecimiento se vea dramático (típicamente cuesta ver subida en un
+    # rango de 7k-9k cuando el eje arranca en 0).
     st.altair_chart(
-        ff_bar_chart(weekly_foll, "week_label", "followers",
-                      x_title="Semana", y_title="Followers", height=260,
+        ff_line_chart(weekly_foll, "week_label", "followers",
+                      x_title="Semana", y_title="Followers", height=300,
                       secondary_label_col="followers_delta_lbl"),
         use_container_width=True,
     )
