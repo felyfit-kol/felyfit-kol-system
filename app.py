@@ -546,99 +546,84 @@ def ff_line_chart(
     y_min: float | None = None,
 ) -> alt.Chart:
     """Line chart con paleta FelyFit (línea burgundy + área gradient + puntos).
-    Diseñado para mostrar tendencias de crecimiento con impacto visual.
-
-    El eje Y NO empieza en 0 por default — empieza un poco debajo del mínimo
-    para que el crecimiento se vea dramático. Override con `y_min`.
+    Eje Y arranca debajo del mínimo (no en 0) para mostrar crecimiento con impacto.
     """
-    # Calcular dominio del eje Y. Si los valores no varían mucho contra su
-    # magnitud (típico de followers), empezar muy debajo de 0 sería plano.
-    # Mejor: arrancar ~15% del rango debajo del mínimo, redondeado a "nice".
     y_values = df[y_col].dropna()
     if y_values.empty:
-        y_min_calc, y_max_calc = 0, 1
+        y_min_calc, y_max_calc = 0.0, 1.0
     else:
         v_min, v_max = float(y_values.min()), float(y_values.max())
+        rng = max(1.0, v_max - v_min)
         if y_min is not None:
-            y_min_calc = y_min
+            y_min_calc = float(y_min)
         else:
-            pad = max(50, (v_max - v_min) * 0.15)
-            y_min_calc = int((v_min - pad) // 100 * 100)
-            y_min_calc = max(0, y_min_calc)
-        # Top: redondear hacia arriba al siguiente "nice" (centena)
-        top_pad = max(50, (v_max - v_min) * 0.10)
-        y_max_calc = int(((v_max + top_pad) // 100 + 1) * 100)
+            y_min_calc = max(0.0, v_min - rng * 0.15)
+        y_max_calc = v_max + rng * 0.18  # margen arriba para que quepan los labels
 
-    y_scale = alt.Scale(domain=[y_min_calc, y_max_calc], nice=False)
-
-    x_axis = alt.X(
-        f"{x_col}:O",
-        title=x_title,
-        axis=alt.Axis(
-            labelAngle=0, labelColor="#8E5A65", labelFontSize=10,
-            labelFont="Quicksand", labelFontWeight=600,
-            titleColor="#8E5A65", domainColor="#F0C9CE", tickColor="#F0C9CE",
+    # Base chart: define encodings UNA vez para que todos los layers compartan
+    # exactamente la misma escala (clave para que la línea y los labels se
+    # posicionen consistentemente).
+    base = alt.Chart(df).encode(
+        x=alt.X(
+            f"{x_col}:O",
+            title=x_title,
+            axis=alt.Axis(
+                labelAngle=0, labelColor="#8E5A65", labelFontSize=10,
+                labelFont="Quicksand", labelFontWeight=600,
+                titleColor="#8E5A65", domainColor="#F0C9CE", tickColor="#F0C9CE",
+            ),
+        ),
+        y=alt.Y(
+            f"{y_col}:Q",
+            title=y_title,
+            scale=alt.Scale(domain=[y_min_calc, y_max_calc], nice=False, zero=False),
+            axis=alt.Axis(
+                labelColor="#8E5A65", labelFontSize=10, labelFont="Quicksand",
+                titleColor="#8E5A65",
+                grid=True, gridColor="#F5DDE0", gridOpacity=0.6,
+                domainOpacity=0, tickOpacity=0,
+            ),
         ),
     )
-    y_axis = alt.Y(
-        f"{y_col}:Q",
-        title=y_title, scale=y_scale,
-        axis=alt.Axis(
-            labelColor="#8E5A65", labelFontSize=10, labelFont="Quicksand",
-            titleColor="#8E5A65",
-            grid=True, gridColor="#F5DDE0", gridOpacity=0.6,
-            domainOpacity=0, tickOpacity=0,
-        ),
-    )
 
-    # Área con gradient burgundy
-    area = alt.Chart(df).mark_area(
-        line={"color": "#722F37", "strokeWidth": 2.5},
+    area = base.mark_area(
         color=alt.Gradient(
             gradient="linear",
             stops=[
-                alt.GradientStop(color="#F5DDE0", offset=0),    # rose suave abajo
-                alt.GradientStop(color="#E5879A", offset=1),    # rose más fuerte arriba
+                alt.GradientStop(color="#FBE9EC", offset=0),
+                alt.GradientStop(color="#E5879A", offset=1),
             ],
             x1=0, y1=1, x2=0, y2=0,
         ),
-        opacity=0.55,
+        opacity=0.45,
+    )
+    line = base.mark_line(color="#722F37", strokeWidth=2.5, interpolate="monotone")
+    points = base.mark_circle(
+        size=85, color="#722F37", opacity=1,
+        stroke="#FFFFFF", strokeWidth=1.5,
     ).encode(
-        x=x_axis, y=y_axis,
         tooltip=[
             alt.Tooltip(f"{x_col}:O", title=x_title or x_col),
             alt.Tooltip(f"{y_col}:Q", title=y_title or y_col, format=label_format),
         ],
     )
 
-    # Puntos en cada vértice (más visibles que la línea sola)
-    points = alt.Chart(df).mark_circle(
-        size=80, color="#722F37", opacity=1,
-        stroke="#FFFFFF", strokeWidth=1.5,
-    ).encode(x=x_axis, y=y_axis)
-
-    layers = [area, points]
+    layers = [area, line, points]
 
     if show_labels:
-        labels = alt.Chart(df).mark_text(
+        labels = base.mark_text(
             align="center", baseline="bottom", dy=-10,
             fontSize=10, fontWeight="bold",
             color="#722F37", font="Bowlby One",
-        ).encode(
-            x=x_axis, y=y_axis,
-            text=alt.Text(f"{y_col}:Q", format=label_format),
-        )
+        ).encode(text=alt.Text(f"{y_col}:Q", format=label_format))
         layers.append(labels)
 
         if secondary_label_col:
-            secondary = alt.Chart(df).mark_text(
-                align="center", baseline="bottom", dy=-24,
+            secondary = base.mark_text(
+                align="center", baseline="bottom", dy=-26,
                 fontSize=9, fontWeight="normal",
                 color="#B07A82", font="Quicksand",
-            ).encode(
-                x=x_axis, y=y_axis,
-                text=alt.Text(f"{secondary_label_col}:N"),
-            )
+            ).encode(text=alt.Text(f"{secondary_label_col}:N"))
             layers.append(secondary)
 
     return alt.layer(*layers).properties(height=height).configure_view(strokeWidth=0)
