@@ -440,6 +440,7 @@ def ff_bar_chart(
     *, x_title: str = None, y_title: str = None,
     height: int = 220, label_format: str = ",.0f",
     show_labels: bool = True,
+    secondary_label_col: str | None = None,
 ) -> alt.Chart:
     """Bar chart con paleta FelyFit (gradient burgundy→rose) + labels visibles
     siempre arriba de cada barra. Estilo unificado para todos los charts.
@@ -451,6 +452,9 @@ def ff_bar_chart(
         height: altura en pixels (default compacto)
         label_format: format string para los valores (ej. ",.0f" / ",.2f" / ".2%")
         show_labels: si False, oculta los números arriba (útil cuando hay muchas barras)
+        secondary_label_col: nombre opcional de columna STRING con label adicional
+            (ej. delta "+34") que se renderea encima del label principal.
+            Ya debe venir pre-formateado por el caller (con signo, etc.).
     """
     bars = alt.Chart(df).mark_bar(
         cornerRadiusTopLeft=6,
@@ -509,7 +513,24 @@ def ff_bar_chart(
             y=alt.Y(f"{y_col}:Q"),
             text=alt.Text(f"{y_col}:Q", format=label_format),
         )
-        chart = (bars + labels)
+        layers = [bars, labels]
+
+        if secondary_label_col:
+            # Label secundario (delta) en una segunda línea encima del principal.
+            # Tipografía más chica y un tono burgundy más suave para que no compita
+            # visualmente con el total.
+            secondary = alt.Chart(df).mark_text(
+                align="center", baseline="bottom", dy=-20,
+                fontSize=9, fontWeight="normal",
+                color="#B07A82", font="Quicksand",
+            ).encode(
+                x=alt.X(f"{x_col}:O"),
+                y=alt.Y(f"{y_col}:Q"),
+                text=alt.Text(f"{secondary_label_col}:N"),
+            )
+            layers.append(secondary)
+
+        chart = alt.layer(*layers)
     else:
         chart = bars
 
@@ -3271,9 +3292,19 @@ def page_dashboard() -> None:
         )
 
     st.markdown("### 📈 Followers")
+    # Calcular delta semanal y formatearlo como string (vacío en la primera
+    # semana porque no hay con qué comparar).
+    weekly_foll = weekly.copy()
+    _diff = weekly_foll["followers"].diff()
+    def _fmt_delta(d):
+        if pd.isna(d) or d == 0:
+            return ""
+        return f"{int(d):+,d}"
+    weekly_foll["followers_delta_lbl"] = _diff.apply(_fmt_delta)
     st.altair_chart(
-        ff_bar_chart(weekly, "week_label", "followers",
-                      x_title="Semana", y_title="Followers", height=240),
+        ff_bar_chart(weekly_foll, "week_label", "followers",
+                      x_title="Semana", y_title="Followers", height=260,
+                      secondary_label_col="followers_delta_lbl"),
         use_container_width=True,
     )
 
