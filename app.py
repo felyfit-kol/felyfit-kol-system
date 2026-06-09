@@ -544,9 +544,16 @@ def ff_line_chart(
     show_labels: bool = True,
     secondary_label_col: str | None = None,
     y_min: float | None = None,
+    emphasis: str = "value",
 ) -> alt.Chart:
     """Line chart con paleta FelyFit (línea burgundy + puntos).
     Eje Y arranca debajo del mínimo (no en 0) para mostrar crecimiento con impacto.
+
+    Args:
+        emphasis: "value" (default) → el total es el label grande, delta es chico.
+                  "delta" → el delta (secondary_label_col) es el label grande,
+                  total es chico. Útil cuando lo importante es el crecimiento,
+                  no la magnitud absoluta.
     """
     y_values = pd.to_numeric(df[y_col], errors="coerce").dropna()
     if y_values.empty:
@@ -558,7 +565,10 @@ def ff_line_chart(
             y_min_calc = float(y_min)
         else:
             y_min_calc = max(0.0, v_min - rng * 0.15)
-        y_max_calc = v_max + rng * 0.18  # margen arriba para que quepan los labels
+        # Padding arriba más generoso para que NUNCA se corte el label del
+        # último punto (el más alto del chart). 32% del rango da espacio
+        # cómodo para 2 líneas de labels apiladas.
+        y_max_calc = v_max + rng * 0.32
 
     x_enc = alt.X(
         f"{x_col}:O",
@@ -599,26 +609,48 @@ def ff_line_chart(
     layers = [line, points]
 
     if show_labels:
-        labels = alt.Chart(df).mark_text(
-            align="center", baseline="bottom", dy=-10,
-            fontSize=10, fontWeight="bold",
+        # Definimos estilos "fuerte" y "suave" y los asignamos según emphasis.
+        strong_style = dict(
+            fontSize=13, fontWeight="bold",
             color="#722F37", font="Bowlby One",
-        ).encode(
-            x=x_enc, y=y_enc,
-            text=alt.Text(f"{y_col}:Q", format=label_format),
         )
-        layers.append(labels)
-
-        if secondary_label_col:
-            secondary = alt.Chart(df).mark_text(
-                align="center", baseline="bottom", dy=-26,
-                fontSize=9, fontWeight="normal",
-                color="#B07A82", font="Quicksand",
+        soft_style = dict(
+            fontSize=9, fontWeight="normal",
+            color="#B07A82", font="Quicksand",
+        )
+        if emphasis == "delta" and secondary_label_col:
+            # Delta = grande (cerca del punto), Total = chico (más arriba)
+            big_text = alt.Chart(df).mark_text(
+                align="center", baseline="bottom", dy=-10, **strong_style,
             ).encode(
                 x=x_enc, y=y_enc,
                 text=alt.Text(f"{secondary_label_col}:N"),
             )
-            layers.append(secondary)
+            small_text = alt.Chart(df).mark_text(
+                align="center", baseline="bottom", dy=-30, **soft_style,
+            ).encode(
+                x=x_enc, y=y_enc,
+                text=alt.Text(f"{y_col}:Q", format=label_format),
+            )
+            layers.append(big_text)
+            layers.append(small_text)
+        else:
+            # Default: Total = grande (cerca del punto), Delta = chico (arriba)
+            big_text = alt.Chart(df).mark_text(
+                align="center", baseline="bottom", dy=-10, **strong_style,
+            ).encode(
+                x=x_enc, y=y_enc,
+                text=alt.Text(f"{y_col}:Q", format=label_format),
+            )
+            layers.append(big_text)
+            if secondary_label_col:
+                small_text = alt.Chart(df).mark_text(
+                    align="center", baseline="bottom", dy=-30, **soft_style,
+                ).encode(
+                    x=x_enc, y=y_enc,
+                    text=alt.Text(f"{secondary_label_col}:N"),
+                )
+                layers.append(small_text)
 
     return alt.layer(*layers).properties(height=height).configure_view(strokeWidth=0)
 
@@ -3551,13 +3583,15 @@ def page_dashboard() -> None:
             return ""
         return f"{int(d):+,d}"
     weekly_foll["followers_delta_lbl"] = _diff.apply(_fmt_delta)
-    # Line chart con área burgundy — el eje Y NO empieza en 0 para que el
-    # crecimiento se vea dramático (típicamente cuesta ver subida en un
-    # rango de 7k-9k cuando el eje arranca en 0).
+    # Line chart con eje Y dinámico (no empieza en 0 para que la subida se
+    # vea dramática). emphasis="delta" pone el crecimiento (+N) como label
+    # grande y el total como subtexto chico — para followers lo importante
+    # es cuánto subió, no el total.
     st.altair_chart(
         ff_line_chart(weekly_foll, "week_label", "followers",
-                      x_title="Semana", y_title="Followers", height=300,
-                      secondary_label_col="followers_delta_lbl"),
+                      x_title="Semana", y_title="Followers", height=320,
+                      secondary_label_col="followers_delta_lbl",
+                      emphasis="delta"),
         use_container_width=True,
     )
 
