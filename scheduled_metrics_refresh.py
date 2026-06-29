@@ -41,7 +41,10 @@ def _days_since(iso_str: str) -> int:
         return 0
 
 
-def main() -> None:
+def main() -> int:
+    """Devuelve exit code: 0 OK, 1 si todos los posts fallaron (problema
+    sistémico tipo Apify bloqueado). 0 si simplemente no hay collabs.
+    """
     db.init()
     log("=" * 60)
     log("Daily collab metrics refresh iniciado")
@@ -56,12 +59,13 @@ def main() -> None:
 
     if not collabs:
         log("No hay collabs activas en tracking. Done.")
-        return
+        return 0
 
     log(f"Encontradas {len(collabs)} collab(s) en tracking")
 
     total_snapshots = 0
     total_completed = 0
+    total_failures = 0
 
     for c in collabs:
         cid = c["id"]
@@ -96,6 +100,7 @@ def main() -> None:
                 result = apify_jobs.snapshot_collab_post(cid, post_url)
                 if result.get("error"):
                     log(f"    ❌ {post_url}: {result['error']}")
+                    total_failures += 1
                 else:
                     log(f"    ✓ {post_url[:60]}… "
                          f"{result['likes']}L · {result['comments']}C · {result['views']}V")
@@ -108,13 +113,23 @@ def main() -> None:
                     total_snapshots += 1
             except Exception as e:
                 log(f"    ❌ {post_url}: {type(e).__name__}: {e}")
+                total_failures += 1
 
-    log(f"Done · snapshots: {total_snapshots} · completed: {total_completed}")
+    log(f"Done · snapshots: {total_snapshots} · completed: {total_completed} · failures: {total_failures}")
+    # Exit code != 0 si TODOS los posts en tracking fallaron — señal de
+    # problema sistémico (Apify bloqueado, network, etc.) que merece notificar
+    # via GitHub Actions failure. Si solo fallaron algunos posts individuales,
+    # es ruido aceptable (post eliminado, etc.) y no fallamos.
+    return 1 if (total_failures > 0 and total_snapshots == 0) else 0
 
 
 if __name__ == "__main__":
+    exit_code = 0
     try:
-        main()
+        exit_code = main() or 0
+    except Exception as e:
+        log(f"Fatal: {type(e).__name__}: {e}")
+        exit_code = 1
     finally:
         # Cierra el libsql client para que el proceso pueda salir.
         # Sin esto, threads internos del cliente HTTP mantienen el proceso vivo
@@ -123,4 +138,4 @@ if __name__ == "__main__":
             db.close_libsql()
         except Exception:
             pass
-        sys.exit(0)
+        sys.exit(exit_code)
