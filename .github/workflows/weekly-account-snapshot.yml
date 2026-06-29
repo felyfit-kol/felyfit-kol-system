@@ -2,8 +2,10 @@ name: Weekly account snapshot
 
 on:
   schedule:
-    # Cada lunes a las 11:00 AM CDMX (17:00 UTC)
-    - cron: "0 17 * * 1"
+    # Cada lunes a las 7:00 AM CDMX (13:00 UTC). Adelantado vs 11am para
+    # absorber el delay típico de GH Actions schedules (0-6h). En el peor
+    # caso llega antes de 1pm CDMX.
+    - cron: "0 13 * * 1"
   workflow_dispatch:
 
 jobs:

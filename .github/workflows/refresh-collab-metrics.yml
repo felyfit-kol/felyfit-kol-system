@@ -2,8 +2,9 @@ name: Daily collab metrics refresh
 
 on:
   schedule:
-    # 11:00 AM Mexico City (CDMX is UTC-6) = 17:00 UTC
-    - cron: "0 17 * * *"
+    # 7:00 AM CDMX (13:00 UTC) — adelantado vs 11am para que llegue
+    # antes incluso con delay típico de GH Actions (0-6h).
+    - cron: "0 13 * * *"
   workflow_dispatch:
 
 jobs:

@@ -769,7 +769,7 @@ def render_emv_per_collab_chart() -> None:
     )
     st.caption(
         f"_{len(creators_order)} collab(s) activa(s) · "
-        "snapshots diarios via cron 11 AM CDMX_"
+        "snapshots diarios via cron 7 AM CDMX_"
     )
 
 
@@ -3470,7 +3470,7 @@ def _collab_tracking_dashboard() -> None:
     if snaps.empty:
         st.warning(
             "Hay collabs en posted pero ningún snapshot todavía. "
-            "Espera al cron diario (11 AM CDMX) o dale 'Actualizar métricas' a alguna."
+            "Espera al cron diario (7 AM CDMX) o dale 'Actualizar métricas' a alguna."
         )
         return
 
@@ -3957,7 +3957,7 @@ def page_dashboard() -> None:
     st.header(":material/dashboard: Dashboard")
     st.caption(
         "Tracking semanal de cuentas FelyFit. Los snapshots se toman cada "
-        "lunes 11 AM CDMX automáticamente via GitHub Actions."
+        "lunes 7 AM CDMX automáticamente via GitHub Actions."
     )
 
     # ── Cuenta a mostrar ──
@@ -4110,7 +4110,7 @@ def page_dashboard() -> None:
     if len(weekly) == 1:
         st.info(
             "📊 Mostrando 1 semana. El histórico se construye automáticamente — "
-            "cada lunes 11 AM CDMX se agrega una semana nueva."
+            "cada lunes 7 AM CDMX se agrega una semana nueva."
         )
 
     st.markdown("### 📈 Followers")
@@ -4156,7 +4156,7 @@ def page_dashboard() -> None:
     else:
         st.caption(
             "_Sin data histórica de engagement rate — se captura automáticamente "
-            "cada lunes 11 AM CDMX vía el cron weekly-account-snapshot._"
+            "cada lunes 7 AM CDMX vía el cron weekly-account-snapshot._"
         )
 
     # ── EMV semanal (line chart) ──
@@ -4220,7 +4220,7 @@ def page_dashboard() -> None:
         st.divider()
         with st.expander(":material/sync: Tomar snapshot manual"):
             st.caption(
-                "El snapshot automático corre cada lunes 11 AM CDMX vía GitHub Actions. "
+                "El snapshot automático corre cada lunes 7 AM CDMX vía GitHub Actions. "
                 "Usa este botón si necesitas un snapshot fuera de horario."
             )
             if st.button(":material/sync: Snapshot @felyfit_mx ahora",
