@@ -3458,14 +3458,74 @@ def _events_detail_view(event_id: int) -> None:
 
     _events_metric_cards(ev)
 
-    # Desglose de inversión (expandible)
-    with st.expander("💰 Desglose de inversión"):
-        cols = st.columns(5)
-        cols[0].metric("Venue", f"${ev.get('venue_cost') or 0:,.0f}")
-        cols[1].metric("Producción", f"${ev.get('production_cost') or 0:,.0f}")
-        cols[2].metric("Kits", f"${ev.get('gift_cost') or 0:,.0f}")
-        cols[3].metric("Logística", f"${ev.get('logistics_cost') or 0:,.0f}")
-        cols[4].metric("Otros", f"${ev.get('other_cost') or 0:,.0f}")
+    # Desglose de inversión: 3 columnas × 2 filas (leíble, sin apretar).
+    # Con % del total al lado del monto para que se vea proporcional.
+    total_inv = float(ev.get("total_investment") or 0)
+
+    def _pct(v: float) -> str:
+        if total_inv <= 0:
+            return ""
+        return f"{(v / total_inv) * 100:.0f}% del total"
+
+    with st.expander("💰 Desglose de inversión", expanded=True):
+        r1 = st.columns(3)
+        r1[0].metric("Venue",     f"${(ev.get('venue_cost') or 0):,.0f}",
+                      delta=_pct(ev.get('venue_cost') or 0), delta_color="off")
+        r1[1].metric("Producción", f"${(ev.get('production_cost') or 0):,.0f}",
+                      delta=_pct(ev.get('production_cost') or 0), delta_color="off")
+        r1[2].metric("Kits",      f"${(ev.get('gift_cost') or 0):,.0f}",
+                      delta=_pct(ev.get('gift_cost') or 0), delta_color="off")
+        r2 = st.columns(3)
+        r2[0].metric("Logística", f"${(ev.get('logistics_cost') or 0):,.0f}",
+                      delta=_pct(ev.get('logistics_cost') or 0), delta_color="off")
+        r2[1].metric("Otros",     f"${(ev.get('other_cost') or 0):,.0f}",
+                      delta=_pct(ev.get('other_cost') or 0), delta_color="off")
+        # 3ra columna vacía para preservar la proporción visual con la fila 1
+        r2[2].markdown("&nbsp;")
+
+        # ── Toggle para editar el presupuesto ──
+        edit_key = f"edit_budget_{event_id}"
+        if not st.session_state.get(edit_key):
+            if st.button(":material/edit: Editar presupuesto",
+                          key=f"edit_btn_{event_id}",
+                          use_container_width=True):
+                st.session_state[edit_key] = True
+                st.rerun()
+        else:
+            with st.form(f"edit_budget_form_{event_id}"):
+                st.markdown("**Actualiza los montos** (MXN)")
+                e1, e2, e3 = st.columns(3)
+                new_venue     = e1.number_input("Venue",
+                    value=float(ev.get('venue_cost') or 0), min_value=0.0, step=100.0)
+                new_prod      = e2.number_input("Producción",
+                    value=float(ev.get('production_cost') or 0), min_value=0.0, step=100.0)
+                new_gifts     = e3.number_input("Kits",
+                    value=float(ev.get('gift_cost') or 0), min_value=0.0, step=100.0)
+                e4, e5, _ = st.columns(3)
+                new_logistics = e4.number_input("Logística",
+                    value=float(ev.get('logistics_cost') or 0), min_value=0.0, step=100.0)
+                new_other     = e5.number_input("Otros",
+                    value=float(ev.get('other_cost') or 0), min_value=0.0, step=100.0)
+                new_total = new_venue + new_prod + new_gifts + new_logistics + new_other
+                st.caption(f"**Nuevo total:** ${new_total:,.0f} MXN")
+                b_save, b_cancel = st.columns(2)
+                save = b_save.form_submit_button(":material/save: Guardar",
+                    type="primary", use_container_width=True)
+                cancel = b_cancel.form_submit_button(":material/close: Cancelar",
+                    use_container_width=True)
+                if save:
+                    events_mod.update_event(event_id,
+                        venue_cost=new_venue, production_cost=new_prod,
+                        gift_cost=new_gifts, logistics_cost=new_logistics,
+                        other_cost=new_other)
+                    # Recalcular ROI con nueva inversión (sin volver a scrapear)
+                    apify_jobs._recalc_event_emv(event_id)
+                    st.session_state[edit_key] = False
+                    st.success("✓ Presupuesto actualizado. ROI recalculado.")
+                    st.rerun()
+                if cancel:
+                    st.session_state[edit_key] = False
+                    st.rerun()
 
     st.divider()
 
