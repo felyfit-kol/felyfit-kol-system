@@ -224,6 +224,78 @@ CREATE TABLE IF NOT EXISTS collab_post_snapshots (
 );
 
 
+-- ============================================================
+-- Eventos (match days, activaciones, etc.)
+-- Un evento agrupa múltiples posts de N creadoras alrededor de una
+-- experiencia física con inversión concreta. Se calcula ROI = EMV/inversión.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS events (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    name                TEXT NOT NULL,           -- "FelyMatch Junio 2026"
+    event_type          TEXT,                    -- match_day / activation / experience
+    event_date          DATE,
+
+    -- Inversión desglosada (MXN). 5 categorías + total computed.
+    venue_cost          REAL DEFAULT 0,          -- alquiler cancha, sede
+    production_cost     REAL DEFAULT 0,          -- fotógrafo, video, edit
+    gift_cost           REAL DEFAULT 0,          -- kits, playeras, regalos
+    logistics_cost      REAL DEFAULT 0,          -- transporte, food, staff
+    other_cost          REAL DEFAULT 0,          -- imprevistos, misc
+
+    -- EMV agregado (recalculado en cada refresh)
+    total_likes         INTEGER DEFAULT 0,
+    total_comments      INTEGER DEFAULT 0,
+    total_saves         INTEGER DEFAULT 0,
+    total_shares        INTEGER DEFAULT 0,
+    total_views         INTEGER DEFAULT 0,
+    emv_mxn             REAL,
+    emv_roi_ratio       REAL,                    -- emv_mxn / total_investment
+    last_recalc_at      TIMESTAMP,
+
+    -- Estado
+    status              TEXT DEFAULT 'planning',
+        -- planning / active / completed / cancelled
+    notes               TEXT,
+    created_at          TIMESTAMP DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_events_status ON events(status);
+CREATE INDEX IF NOT EXISTS idx_events_date ON events(event_date DESC);
+
+
+-- Posts asociados a un evento. Un post puede pertenecer a un evento Y
+-- también a una collab (double-count intencional con flag visible).
+CREATE TABLE IF NOT EXISTS event_posts (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id        INTEGER NOT NULL REFERENCES events(id),
+    post_url        TEXT NOT NULL,
+    handle          TEXT,                        -- @handle extraído del scrape
+    post_type       TEXT,                        -- reel / post / story / carousel
+    posted_at       TIMESTAMP,
+    added_at        TIMESTAMP DEFAULT (datetime('now')),
+    last_scraped_at TIMESTAMP,
+    UNIQUE(event_id, post_url)
+);
+
+CREATE INDEX IF NOT EXISTS idx_event_posts_event ON event_posts(event_id);
+CREATE INDEX IF NOT EXISTS idx_event_posts_url ON event_posts(post_url);
+
+
+-- Snapshots diarios de cada post de evento (time-series)
+CREATE TABLE IF NOT EXISTS event_post_snapshots (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id        INTEGER NOT NULL REFERENCES events(id),
+    post_url        TEXT NOT NULL,
+    captured_at     TIMESTAMP DEFAULT (datetime('now')),
+    likes           INTEGER,
+    comments        INTEGER,
+    saves           INTEGER,
+    shares          INTEGER,
+    views           INTEGER,
+    UNIQUE(event_id, post_url, captured_at)
+);
+
+
 -- Runs de scouting (auditoria + costo Apify)
 CREATE TABLE IF NOT EXISTS scout_runs (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,

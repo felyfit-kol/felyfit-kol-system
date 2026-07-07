@@ -24,6 +24,7 @@ import apify_jobs
 import auth
 import config
 import db
+import events as events_mod
 import i18n
 import lookup_infographic
 import scoring
@@ -3409,6 +3410,292 @@ def _collab_by_campaign_view() -> None:
 
 
 # ============================================================
+# PAGE: Eventos (match days, activaciones)
+# ============================================================
+def _events_metric_cards(ev: dict) -> None:
+    """4 metric cards: Inversión, EMV, ROI, N posts."""
+    invest = float(ev.get("total_investment") or 0)
+    emv = float(ev.get("emv_mxn") or 0)
+    roi = ev.get("emv_roi_ratio")
+    # Contar posts vinculados
+    with db.connect() as conn:
+        n_posts = conn.execute(
+            "SELECT COUNT(*) FROM event_posts WHERE event_id=?", (ev["id"],)
+        ).fetchone()[0]
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Inversión", f"${invest:,.0f}")
+    c2.metric("EMV actual", f"${emv:,.0f}",
+               delta=f"{(emv - invest):+,.0f} vs inversión" if emv else None,
+               delta_color="normal")
+    if roi is None:
+        c3.metric("Ratio", "—", help="Aún sin inversión o sin EMV.")
+    else:
+        target = float(config.EMV_TARGET_RATIO)
+        c3.metric("Ratio EMV/$", f"{roi:.2f}x",
+                   delta=f"target {target:.1f}x",
+                   delta_color="normal" if roi >= target else "inverse")
+    c4.metric("Posts", f"{n_posts}")
+
+
+def _events_detail_view(event_id: int) -> None:
+    """Panel de detalle de un evento: métricas, chart, tabla posts."""
+    ev = events_mod.get_event(event_id)
+    if not ev:
+        st.error("Evento no encontrado.")
+        return
+
+    st.markdown(f"## {ev['name']}")
+    meta = []
+    if ev.get("event_date"):
+        meta.append(f"📅 {ev['event_date']}")
+    if ev.get("event_type"):
+        meta.append(f"🏷️ {ev['event_type']}")
+    if ev.get("last_recalc_at"):
+        meta.append(f"🔄 Último refresh: {ev['last_recalc_at']}")
+    if meta:
+        st.caption(" · ".join(meta))
+
+    _events_metric_cards(ev)
+
+    # Desglose de inversión (expandible)
+    with st.expander("💰 Desglose de inversión"):
+        cols = st.columns(5)
+        cols[0].metric("Venue", f"${ev.get('venue_cost') or 0:,.0f}")
+        cols[1].metric("Producción", f"${ev.get('production_cost') or 0:,.0f}")
+        cols[2].metric("Kits", f"${ev.get('gift_cost') or 0:,.0f}")
+        cols[3].metric("Logística", f"${ev.get('logistics_cost') or 0:,.0f}")
+        cols[4].metric("Otros", f"${ev.get('other_cost') or 0:,.0f}")
+
+    st.divider()
+
+    # Chart EMV día a día (line burgundy)
+    st.markdown("### 📈 EMV acumulado día a día")
+    snaps = fetch_df("""
+        SELECT captured_at, likes, comments, saves, shares, views, post_url
+        FROM event_post_snapshots WHERE event_id=?
+        ORDER BY captured_at
+    """, (event_id,))
+    if snaps.empty:
+        st.caption(
+            "_Sin snapshots todavía — agrega URLs abajo y refresca métricas._"
+        )
+    else:
+        snaps["captured_at"] = pd.to_datetime(snaps["captured_at"], errors="coerce")
+        snaps["day"] = snaps["captured_at"].dt.date.astype(str)
+        latest_per_post = (snaps.sort_values("captured_at")
+                                 .groupby(["day", "post_url"]).last().reset_index())
+        mult = config.EMV_MULTIPLIERS
+        latest_per_post["emv"] = (
+            latest_per_post["likes"].fillna(0)    * mult.get("like_mxn", 0.30) +
+            latest_per_post["comments"].fillna(0) * mult.get("comment_mxn", 3.0) +
+            latest_per_post["saves"].fillna(0)    * mult.get("save_mxn", 5.0) +
+            latest_per_post["shares"].fillna(0)   * mult.get("share_mxn", 6.0) +
+            latest_per_post["views"].fillna(0)    * mult.get("view_mxn", 0.05)
+        )
+        daily = latest_per_post.groupby("day")["emv"].sum().reset_index()
+        daily["emv"] = daily["emv"].round(0)
+        # Delta día a día
+        _diff = daily["emv"].diff()
+        daily["emv_delta_lbl"] = _diff.apply(
+            lambda d: "" if pd.isna(d) or d == 0 else f"{int(d):+,d}"
+        )
+        st.altair_chart(
+            ff_line_chart(daily, "day", "emv",
+                          x_title="Día", y_title="EMV (MXN)", height=280,
+                          label_format="$,.0f",
+                          secondary_label_col="emv_delta_lbl"),
+            use_container_width=True,
+        )
+
+    st.divider()
+
+    # Posts vinculados
+    posts = events_mod.get_event_posts(event_id)
+    st.markdown(f"### 🎬 Posts vinculados ({len(posts)})")
+
+    with st.form(f"add_post_form_{event_id}", clear_on_submit=True):
+        url_col, add_col = st.columns([5, 1])
+        new_url = url_col.text_input(
+            "Pega URL de IG (reel, post, story archive)",
+            placeholder="https://www.instagram.com/p/…",
+            key=f"add_url_{event_id}",
+            label_visibility="collapsed",
+        )
+        submitted = add_col.form_submit_button("Agregar", type="primary",
+                                                 use_container_width=True)
+        if submitted and new_url:
+            ok = events_mod.add_post_to_event(event_id, new_url)
+            if ok:
+                st.success(f"Agregado. Dale a 'Refrescar métricas' para scrapear.")
+                st.rerun()
+            else:
+                st.info("Ese URL ya está en el evento.")
+
+    if posts:
+        for p in posts:
+            row = st.container(border=True)
+            with row:
+                c_url, c_meta, c_actions = st.columns([5, 2, 1])
+                handle_str = f"@{p['handle']}" if p.get("handle") else "_(sin scrape aún)_"
+                dbl_flag = ""
+                if p.get("in_collab"):
+                    dbl_flag = f" · 🏷️ **también en collab #{p.get('collab_id')}**"
+                c_url.markdown(
+                    f"**{handle_str}**{dbl_flag}  \n"
+                    f"[{p['post_url']}]({p['post_url']})"
+                )
+                type_str = p.get("post_type") or "—"
+                posted_str = (p.get("posted_at") or "")[:10] if p.get("posted_at") else "—"
+                c_meta.caption(f"Tipo: {type_str}\n\nPublicado: {posted_str}")
+                if c_actions.button(":material/delete: Quitar",
+                                     key=f"rm_{event_id}_{p['id']}",
+                                     use_container_width=True):
+                    events_mod.remove_post_from_event(event_id, p["post_url"])
+                    st.rerun()
+
+    st.divider()
+
+    # Botón refresh manual + acciones admin
+    a1, a2, a3 = st.columns(3)
+    if a1.button(":material/refresh: Refrescar métricas ahora",
+                  type="primary", use_container_width=True,
+                  key=f"refresh_event_{event_id}"):
+        if not posts:
+            st.warning("No hay posts vinculados para scrapear.")
+        else:
+            progress = st.progress(0, text="Scrapeando posts…")
+            for i, p in enumerate(posts, 1):
+                progress.progress((i - 1) / len(posts),
+                                    text=f"Scrapeando {i}/{len(posts)}…")
+                try:
+                    res = apify_jobs.snapshot_event_post(event_id, p["post_url"])
+                    if res.get("error"):
+                        st.error(f"❌ {p['post_url'][:60]}…: {res['error']}")
+                except Exception as e:
+                    st.error(f"❌ {p['post_url'][:60]}…: {type(e).__name__}")
+            progress.progress(1.0, text="Listo")
+            st.success("✓ Métricas actualizadas.")
+            st.rerun()
+
+    if ev["status"] == "active":
+        if a2.button(":material/check_circle: Marcar como completado",
+                      use_container_width=True,
+                      key=f"complete_event_{event_id}"):
+            events_mod.update_event(event_id, status="completed")
+            st.rerun()
+
+    if auth.is_admin() and ev["status"] != "completed":
+        if a3.button(":material/delete_forever: Eliminar evento",
+                      use_container_width=True,
+                      key=f"del_event_{event_id}"):
+            events_mod.delete_event(event_id)
+            st.session_state.pop(f"open_event_{event_id}", None)
+            st.rerun()
+
+
+def _events_list_tab(status_filter: str) -> None:
+    """Lista de eventos filtrados por status. Cada uno se expande a detalle."""
+    events_list = events_mod.list_events(status=status_filter)
+    if not events_list:
+        st.caption(f"_Sin eventos en estado `{status_filter}` todavía._")
+        return
+
+    for ev in events_list:
+        key = f"open_event_{ev['id']}"
+        with st.container(border=True):
+            hdr_col, roi_col, btn_col = st.columns([3, 2, 1])
+            hdr_col.markdown(
+                f"### {ev['name']}\n"
+                f"{'📅 ' + (ev.get('event_date') or '—')} · "
+                f"💰 ${(ev.get('total_investment') or 0):,.0f}"
+            )
+            emv = float(ev.get("emv_mxn") or 0)
+            roi = ev.get("emv_roi_ratio")
+            roi_str = f"{roi:.2f}x" if roi else "—"
+            roi_col.markdown(
+                f"**EMV:** ${emv:,.0f}  \n**Ratio:** {roi_str}"
+            )
+            is_open = st.session_state.get(key, False)
+            if btn_col.button("Cerrar" if is_open else "Abrir",
+                                key=f"toggle_{ev['id']}",
+                                use_container_width=True):
+                st.session_state[key] = not is_open
+                st.rerun()
+
+        if st.session_state.get(key):
+            with st.container(border=True):
+                _events_detail_view(ev["id"])
+
+
+def _events_create_tab() -> None:
+    """Form para crear evento nuevo."""
+    st.markdown("### Crear evento nuevo")
+    with st.form("new_event_form", clear_on_submit=True):
+        name = st.text_input("Nombre",
+                              placeholder="Ej. FelyMatch Junio 2026")
+        cols = st.columns(2)
+        event_type = cols[0].selectbox("Tipo",
+            ["match_day", "activation", "experience", "launch", "otro"])
+        event_date = cols[1].date_input("Fecha", value=None,
+                                          format="YYYY-MM-DD")
+
+        st.markdown("**Inversión (MXN) — todo en 0 si aún no se sabe**")
+        i1, i2 = st.columns(2)
+        venue = i1.number_input("Venue (cancha, sede)", min_value=0.0, step=100.0)
+        production = i2.number_input("Producción (fotos, video)",
+                                       min_value=0.0, step=100.0)
+        i3, i4 = st.columns(2)
+        gifts = i3.number_input("Kits / regalos", min_value=0.0, step=100.0)
+        logistics = i4.number_input("Logística (transporte, food)",
+                                      min_value=0.0, step=100.0)
+        other = st.number_input("Otros", min_value=0.0, step=100.0)
+
+        notes = st.text_area("Notas (opcional)", height=80)
+
+        total = venue + production + gifts + logistics + other
+        st.caption(f"**Inversión total:** ${total:,.0f} MXN")
+
+        submitted = st.form_submit_button(
+            ":material/add: Crear evento", type="primary",
+            use_container_width=True)
+        if submitted:
+            if not name.strip():
+                st.error("El nombre es obligatorio.")
+                return
+            new_id = events_mod.create_event(
+                name=name, event_type=event_type,
+                event_date=event_date if event_date else None,
+                venue_cost=venue, production_cost=production,
+                gift_cost=gifts, logistics_cost=logistics,
+                other_cost=other,
+                notes=notes.strip() or None,
+            )
+            st.success(f"✓ Evento creado (#{new_id}). Ve al tab 'Activos' "
+                        "para agregarle URLs de posts.")
+
+
+def page_events() -> None:
+    """Página de eventos (match days, activaciones). Similar a Collabs pero
+    agrupando posts de N creadoras alrededor de una experiencia física."""
+    st.header(":material/celebration: Eventos")
+    st.caption(
+        "Trackea eventos con inversión desglosada y EMV agregado de todos "
+        "los posts relacionados. Ratio EMV/inversión = ROI del evento."
+    )
+
+    tabs = st.tabs([":material/local_fire_department: Activos",
+                     ":material/task_alt: Completados",
+                     ":material/add_circle: Crear nuevo"])
+    with tabs[0]:
+        _events_list_tab("active")
+    with tabs[1]:
+        _events_list_tab("completed")
+    with tabs[2]:
+        _events_create_tab()
+
+
+# ============================================================
 # PAGE: Settings
 # ============================================================
 def page_dashboard() -> None:
@@ -4044,6 +4331,7 @@ PAGES = [
     ":material/dashboard: Dashboard",
     ":material/person_search: Stalkear",
     ":material/handshake: Collabs",
+    ":material/celebration: Eventos",
     ":material/view_kanban: The chosen ones",
     ":material/search: Scouting",
     ":material/swipe: Felynder",
@@ -4145,6 +4433,8 @@ def main() -> None:
         page_pipeline()
     elif page.endswith("Collabs"):
         page_collabs()
+    elif page.endswith("Eventos"):
+        page_events()
     elif page.endswith("Stories tracking"):
         page_stories_tracking()
     elif page.endswith("The rules"):

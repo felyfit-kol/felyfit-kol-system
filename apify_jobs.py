@@ -924,6 +924,110 @@ def _recalc_collab_emv(collab_id: int) -> None:
               emv, cash_ratio, total_ratio, collab_id))
 
 
+def snapshot_event_post(event_id: int, post_url: str) -> Dict:
+    """Scrape metricas actuales del post de un evento, guarda snapshot y
+    recalcula EMV del evento. Extrae también @handle + tipo del post.
+    """
+    actor = config.APIFY_ACTORS["instagram_scraper"]
+    run = client().actor(actor).call(run_input={
+        "directUrls": [post_url],
+        "resultsType": "posts",
+        "resultsLimit": 1,
+        "addParentData": False,
+    })
+
+    metrics = None
+    for item in client().dataset(run["defaultDatasetId"]).iterate_items():
+        metrics = item
+        break
+
+    if not metrics:
+        return {"error": "Apify devolvió 0 items para este post URL"}
+
+    likes = metrics.get("likesCount") or 0
+    comments = metrics.get("commentsCount") or 0
+    views = (metrics.get("videoViewCount") or metrics.get("videoPlayCount")
+              or metrics.get("viewCount") or 0)
+    handle = (metrics.get("ownerUsername")
+              or metrics.get("owner", {}).get("username")
+              or "").lower().lstrip("@")
+    post_type = metrics.get("type") or metrics.get("productType") or ""
+    posted_at = metrics.get("timestamp")
+
+    with db.connect() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO event_post_snapshots "
+            "(event_id, post_url, likes, comments, views) VALUES (?, ?, ?, ?, ?)",
+            (event_id, post_url, likes, comments, views),
+        )
+        # Enriquecer event_posts con handle/tipo si vinieron vacíos originalmente
+        conn.execute(
+            "UPDATE event_posts SET "
+            "  handle=COALESCE(NULLIF(handle,''), ?), "
+            "  post_type=COALESCE(NULLIF(post_type,''), ?), "
+            "  posted_at=COALESCE(posted_at, ?), "
+            "  last_scraped_at=datetime('now') "
+            "WHERE event_id=? AND post_url=?",
+            (handle or None, post_type or None, posted_at, event_id, post_url),
+        )
+
+    _recalc_event_emv(event_id)
+    return {"likes": likes, "comments": comments, "views": views,
+             "handle": handle, "post_type": post_type}
+
+
+def _recalc_event_emv(event_id: int) -> None:
+    """Recalcula EMV total y ROI del evento a partir del snapshot más
+    reciente de cada post vinculado. Multipliers = mismos que Collabs.
+    """
+    mult = config.EMV_MULTIPLIERS
+    with db.connect() as conn:
+        rows = conn.execute("""
+            SELECT post_url, likes, comments, saves, shares, views
+            FROM event_post_snapshots
+            WHERE event_id=? AND captured_at = (
+                SELECT MAX(captured_at) FROM event_post_snapshots
+                WHERE event_id=? AND post_url=event_post_snapshots.post_url
+            )
+        """, (event_id, event_id)).fetchall()
+
+        tot_likes = sum(r["likes"] or 0 for r in rows)
+        tot_comments = sum(r["comments"] or 0 for r in rows)
+        tot_saves = sum(r["saves"] or 0 for r in rows)
+        tot_shares = sum(r["shares"] or 0 for r in rows)
+        tot_views = sum(r["views"] or 0 for r in rows)
+
+        emv = (
+            tot_likes    * mult.get("like_mxn", 0.30) +
+            tot_comments * mult.get("comment_mxn", 3.0) +
+            tot_saves    * mult.get("save_mxn", 5.0) +
+            tot_shares   * mult.get("share_mxn", 6.0) +
+            tot_views    * mult.get("view_mxn", 0.05)
+        )
+
+        ev = conn.execute(
+            "SELECT venue_cost, production_cost, gift_cost, logistics_cost, other_cost "
+            "FROM events WHERE id=?", (event_id,)
+        ).fetchone()
+        if not ev:
+            return
+
+        total_invest = ((ev["venue_cost"] or 0) + (ev["production_cost"] or 0) +
+                        (ev["gift_cost"] or 0) + (ev["logistics_cost"] or 0) +
+                        (ev["other_cost"] or 0))
+        roi_ratio = (emv / total_invest) if total_invest > 0 else None
+
+        conn.execute("""
+            UPDATE events SET
+                total_likes=?, total_comments=?, total_saves=?,
+                total_shares=?, total_views=?,
+                emv_mxn=?, emv_roi_ratio=?,
+                last_recalc_at=datetime('now')
+            WHERE id=?
+        """, (tot_likes, tot_comments, tot_saves, tot_shares, tot_views,
+              emv, roi_ratio, event_id))
+
+
 # ============================================================
 # Scout from seeds — discovery por red usando relatedProfiles de IG
 # ============================================================

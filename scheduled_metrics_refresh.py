@@ -57,15 +57,14 @@ def main() -> int:
             WHERE status = 'posted'
         """).fetchall()
 
-    if not collabs:
-        log("No hay collabs activas en tracking. Done.")
-        return 0
-
-    log(f"Encontradas {len(collabs)} collab(s) en tracking")
-
     total_snapshots = 0
     total_completed = 0
     total_failures = 0
+
+    if not collabs:
+        log("No hay collabs activas en tracking.")
+    else:
+        log(f"Encontradas {len(collabs)} collab(s) en tracking")
 
     for c in collabs:
         cid = c["id"]
@@ -115,12 +114,54 @@ def main() -> int:
                 log(f"    ❌ {post_url}: {type(e).__name__}: {e}")
                 total_failures += 1
 
-    log(f"Done · snapshots: {total_snapshots} · completed: {total_completed} · failures: {total_failures}")
-    # Exit code != 0 si TODOS los posts en tracking fallaron — señal de
-    # problema sistémico (Apify bloqueado, network, etc.) que merece notificar
-    # via GitHub Actions failure. Si solo fallaron algunos posts individuales,
-    # es ruido aceptable (post eliminado, etc.) y no fallamos.
-    return 1 if (total_failures > 0 and total_snapshots == 0) else 0
+    log(f"Collabs done · snapshots: {total_snapshots} · completed: {total_completed} · failures: {total_failures}")
+
+    # ── Refresh de posts de EVENTOS activos ──
+    # Los eventos no tienen ventana de tracking cerrada (a diferencia de
+    # collabs). Se refrescan mientras estén en status='active'. Cuando el
+    # usuario los marca 'completed' manualmente dejan de refrescarse.
+    with db.connect() as conn:
+        events_active = conn.execute("""
+            SELECT id, name FROM events WHERE status = 'active'
+        """).fetchall()
+
+    ev_snapshots = 0
+    ev_failures = 0
+    if events_active:
+        log(f"Encontrados {len(events_active)} evento(s) activo(s)")
+        for ev in events_active:
+            eid = ev["id"]
+            log(f"  Evento #{eid} ('{ev['name']}')")
+            with db.connect() as conn:
+                ep = conn.execute(
+                    "SELECT post_url FROM event_posts WHERE event_id=?", (eid,)
+                ).fetchall()
+            if not ep:
+                log(f"    (sin posts vinculados — skip)")
+                continue
+            for p in ep:
+                post_url = p["post_url"]
+                try:
+                    result = apify_jobs.snapshot_event_post(eid, post_url)
+                    if result.get("error"):
+                        log(f"    ❌ {post_url}: {result['error']}")
+                        ev_failures += 1
+                    else:
+                        log(f"    ✓ {post_url[:60]}… "
+                             f"{result['likes']}L · {result['comments']}C · {result['views']}V")
+                        ev_snapshots += 1
+                except Exception as e:
+                    log(f"    ❌ {post_url}: {type(e).__name__}: {e}")
+                    ev_failures += 1
+        log(f"Events done · snapshots: {ev_snapshots} · failures: {ev_failures}")
+    else:
+        log("No hay eventos activos.")
+
+    total_all_snapshots = total_snapshots + ev_snapshots
+    total_all_failures = total_failures + ev_failures
+    # Exit != 0 si TODO falló (problema sistémico). Si solo algunos posts
+    # fallaron pero otros funcionaron, es ruido aceptable.
+    return 1 if (total_all_failures > 0 and total_all_snapshots == 0) else 0
 
 
 if __name__ == "__main__":
