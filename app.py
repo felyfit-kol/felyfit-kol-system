@@ -441,7 +441,7 @@ def ff_bar_chart(
     *, x_title: str = None, y_title: str = None,
     height: int = 220, label_format: str = ",.0f",
     show_labels: bool = True,
-    secondary_label_col: str | None = None,
+    secondary_label_col: Optional[str] = None,
 ) -> alt.Chart:
     """Bar chart con paleta FelyFit (gradient burgundy→rose) + labels visibles
     siempre arriba de cada barra. Estilo unificado para todos los charts.
@@ -543,8 +543,8 @@ def ff_line_chart(
     *, x_title: str = None, y_title: str = None,
     height: int = 280, label_format: str = ",.0f",
     show_labels: bool = True,
-    secondary_label_col: str | None = None,
-    y_min: float | None = None,
+    secondary_label_col: Optional[str] = None,
+    y_min: Optional[float] = None,
     emphasis: str = "value",
 ) -> alt.Chart:
     """Line chart con paleta FelyFit (línea burgundy + puntos).
