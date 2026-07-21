@@ -1415,6 +1415,19 @@ def snapshot_account(handle: str) -> Dict:
     full_name = profile_data.get("fullName") or ""
     is_verified = 1 if profile_data.get("verified") else 0
 
+    # Guard: si el perfil dice que hay posts pero Apify no trajo `latestPosts`,
+    # es una falla transient del scraper (Instagram rate limit, layout change,
+    # etc.). NO guardamos snapshot porque avg_likes/comments/views/ER se calcularían
+    # como 0 y contaminarían el histórico con puntos falsos en la gráfica.
+    if posts_count > 0 and not posts_data:
+        return {
+            "error": (f"Apify devolvió perfil sin latestPosts (postsCount={posts_count}, "
+                       "len(latestPosts)=0). Probable falla transient del scraper. "
+                       "No guardo snapshot para no contaminar el histórico."),
+            "handle": handle,
+            "followers": followers,
+        }
+
     total_likes = 0
     total_comments = 0
     total_views = 0
