@@ -2718,17 +2718,25 @@ def page_collabs() -> None:
 
 
 def _collab_create_form() -> None:
-    """Form para crear una nueva collab."""
+    """Form para crear una nueva collab.
+    Elegibles = cualquier candidata "en pipeline" (todas excepto rechazadas
+    o pausadas). Incluye `discovered` porque a veces Lucy salta la puerta
+    de "approved" y crea collab directo cuando ya decidió trabajar con
+    alguien recién scouted.
+    """
     eligible = fetch_df(
-        "SELECT handle, full_name, followers, tier FROM candidates "
-        "WHERE status IN ('approved','contacted','responded','negotiating','active') "
+        "SELECT handle, full_name, followers, tier, status FROM candidates "
+        "WHERE status IN "
+        "  ('discovered','approved','contacted','responded','negotiating','active') "
         "ORDER BY handle"
     )
     if eligible.empty:
         st.info("No hay candidatas elegibles. Aprueba o contacta a alguna primero.")
         return
 
-    # Pre-construir labels robusto a NaN/None
+    # Pre-construir labels robusto a NaN/None. Incluye status para que Lucy
+    # vea qué tan "lista" está la creadora (discovered = aún raw, active = en
+    # otra collab en curso, etc.).
     def _opt_label(h: str) -> str:
         row = eligible[eligible["handle"] == h]
         if row.empty:
@@ -2740,7 +2748,9 @@ def _collab_create_form() -> None:
             foll_n = int(foll_v) if pd.notna(foll_v) else 0
         except (ValueError, TypeError):
             foll_n = 0
-        return f"@{h} ({tier_s} · {foll_n:,}f)"
+        status_v = row["status"].iloc[0]
+        status_s = status_v if isinstance(status_v, str) and status_v else "?"
+        return f"@{h} ({tier_s} · {foll_n:,}f · {status_s})"
 
     with st.form("new_collab_form", clear_on_submit=True):
         st.markdown("**Quién + Campaña**")
