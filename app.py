@@ -985,8 +985,93 @@ def render_header() -> None:
 # ============================================================
 # PAGE: Scouting
 # ============================================================
+def _render_tiktok_scouting_flow() -> None:
+    """Scouting TikTok minimal: hashtag → autores únicos → discovered.
+    Sin seeds ni competitor mentions por ahora (roadmap Fase 3.5)."""
+    st.caption("Corre scout por hashtag TikTok. Los autores encontrados se "
+                "guardan como candidatos TT con status `discovered`. Aparecen "
+                "en Stalkear TikTok y (próximamente) en Pipeline TT.")
+
+    # Actividad reciente TT
+    recent_tt = fetch_df("""
+        SELECT COUNT(*) n, MAX(last_enriched_at) last_touch
+        FROM tiktok_candidates
+        WHERE discovered_at >= datetime('now', '-7 days')
+    """)
+    n_recent = int(recent_tt.iloc[0]["n"]) if not recent_tt.empty else 0
+    if n_recent > 0:
+        st.info(
+            f":material/robot_2: **{n_recent} candidatos TikTok nuevos "
+            "en los últimos 7 días**."
+        )
+
+    with st.container(border=True):
+        st.markdown("**:material/tag: Scout por hashtag TikTok**")
+        c1, c2 = st.columns([3, 1])
+        hashtag = c1.text_input("Hashtag (sin #)",
+                                  placeholder="ej. fitnessmx, gymgirl",
+                                  key="tt_scout_hashtag")
+        limit = c2.number_input("Videos a scrapear", min_value=10,
+                                  max_value=200, value=50, step=10,
+                                  key="tt_scout_limit")
+        st.caption(f"~${(limit * 0.30 / 1000):.4f} USD por corrida.")
+
+        if st.button(":material/explore: Correr scout",
+                      type="primary", key="tt_scout_run"):
+            clean = (hashtag or "").strip().lstrip("#").lower()
+            if not clean:
+                st.error("Escribe un hashtag.")
+            else:
+                with st.spinner(f"Scrapeando #{clean} en TikTok…"):
+                    try:
+                        res = tiktok_jobs.scout_tiktok_hashtag(
+                            clean, results_limit=int(limit))
+                        st.success(
+                            f"✓ **{res['new']} nuevos** de "
+                            f"{res['unique_authors']} autores únicos "
+                            f"(vistos {res['seen']} videos). "
+                            f"Costo: ${res['compute_usd']:.4f} USD."
+                        )
+                    except Exception as e:
+                        st.error(f"Error: {type(e).__name__}: {e}")
+
+    # Últimos candidatos TT
+    latest_tt = fetch_df("""
+        SELECT handle, nickname, followers, video_count, source_detail,
+                discovered_at, status, profile_pic_url
+        FROM tiktok_candidates
+        ORDER BY discovered_at DESC LIMIT 30
+    """)
+    if not latest_tt.empty:
+        with st.expander(f"📋 Últimos {len(latest_tt)} candidatos TikTok",
+                          expanded=False):
+            display = latest_tt.copy()
+            display["Foto"] = display["profile_pic_url"].apply(_to_image_src)
+            display["Followers"] = display["followers"].fillna(0).astype(int).map("{:,}".format)
+            display["Videos"] = display["video_count"].fillna(0).astype(int)
+            display = display[["Foto", "handle", "nickname", "Followers",
+                                 "Videos", "source_detail", "status",
+                                 "discovered_at"]]
+            display = display.rename(columns={
+                "handle": "Handle", "nickname": "Nombre",
+                "source_detail": "Fuente", "status": "Status",
+                "discovered_at": "Descubierta",
+            })
+            st.dataframe(display, use_container_width=True, hide_index=True,
+                          column_config={"Foto": st.column_config.ImageColumn(
+                              "Foto", width="small")})
+
+
 def page_scouting() -> None:
     st.header(":material/search: Scouting")
+
+    platform = st.radio(
+        "Plataforma", ["Instagram", "TikTok"], horizontal=True,
+        key="scouting_platform", label_visibility="collapsed",
+    )
+    if platform == "TikTok":
+        _render_tiktok_scouting_flow()
+        return
 
     # ============== ACTIVIDAD DEL BOT AUTÓNOMO ==============
     # Scouts ejecutados por scheduled_scout.py (cron / launchd) en últimas 24h.
@@ -2696,8 +2781,91 @@ def _tinder_queue(default_status: str, queue_key: str) -> None:
 # ============================================================
 # PAGE: Pipeline
 # ============================================================
+def _render_tiktok_pipeline() -> None:
+    """Pipeline TikTok — mismo layout que IG pero sobre tiktok_candidates."""
+    search_q = st.text_input(
+        "🔍 Buscar por handle o nickname",
+        placeholder="ej. @sofitiktok o Sofía",
+        key="tt_pipeline_search",
+    ).strip()
+
+    status_options = ["(todas)", "discovered", "approved", "contacted",
+                      "responded", "negotiating", "active", "declined",
+                      "rejected", "paused"]
+    col_s, col_t = st.columns(2)
+    sel = col_s.selectbox("Status", status_options, key="tt_pipeline_status")
+    tier_filter = col_t.selectbox("Tier",
+        ["(todos)", "nano", "micro", "mid", "macro", "mega"],
+        key="tt_pipeline_tier")
+
+    wheres = ["1=1"]
+    params: list = []
+    if search_q:
+        q = search_q.lstrip("@").lower()
+        wheres.append("(LOWER(handle) LIKE ? OR LOWER(COALESCE(nickname,'')) LIKE ?)")
+        params.extend([f"%{q}%", f"%{q}%"])
+    if sel != "(todas)":
+        wheres.append("status=?")
+        params.append(sel)
+    if tier_filter != "(todos)":
+        wheres.append("tier=?")
+        params.append(tier_filter)
+
+    where_sql = "WHERE " + " AND ".join(wheres)
+    df = fetch_df(f"""
+        SELECT handle, nickname, status, followers, total_hearts, video_count,
+                engagement_rate, tier, fit_score, source, source_detail,
+                profile_pic_url, last_enriched_at, discovered_at
+        FROM tiktok_candidates {where_sql}
+        ORDER BY fit_score DESC NULLS LAST, followers DESC NULLS LAST,
+                  discovered_at DESC
+        LIMIT 500
+    """, tuple(params))
+
+    if df.empty:
+        st.info("Sin resultados TT. Corre Scouting → TikTok para descubrir.")
+        return
+
+    df["engagement_rate"] = pd.to_numeric(df["engagement_rate"], errors="coerce")
+    df["fit_score"] = pd.to_numeric(df["fit_score"], errors="coerce")
+    df["ER %"] = (df["engagement_rate"] * 100).round(2)
+    df["Followers"] = df["followers"].fillna(0).astype(int).map("{:,}".format)
+    df["Hearts"] = df["total_hearts"].fillna(0).astype(int).map("{:,}".format)
+    df["Videos"] = df["video_count"].fillna(0).astype(int)
+    df["Fit"] = df["fit_score"].round(1)
+    df["TikTok"] = df["handle"].apply(lambda h: f"https://www.tiktok.com/@{h}")
+    df["Foto"] = df["profile_pic_url"].apply(_to_image_src)
+
+    display = df[["Foto", "handle", "nickname", "status", "Followers",
+                    "Hearts", "Videos", "ER %", "tier", "Fit",
+                    "source_detail", "TikTok"]]
+    display = display.rename(columns={
+        "handle": "Handle", "nickname": "Nombre",
+        "status": "Status", "tier": "Tier",
+        "source_detail": "Origen",
+    })
+    st.dataframe(
+        display, use_container_width=True, hide_index=True,
+        column_config={
+            "Foto": st.column_config.ImageColumn("Foto", width="small"),
+            "TikTok": st.column_config.LinkColumn("Perfil TT",
+                display_text="abrir →"),
+        },
+    )
+    st.caption(f"{len(df)} candidatas TikTok · "
+                f"{int(df['last_enriched_at'].notna().sum())} enriquecidas")
+
+
 def page_pipeline() -> None:
     st.header(":material/view_kanban: The chosen ones")
+
+    platform = st.radio(
+        "Plataforma", ["Instagram", "TikTok"], horizontal=True,
+        key="pipeline_platform", label_visibility="collapsed",
+    )
+    if platform == "TikTok":
+        _render_tiktok_pipeline()
+        return
 
     search_q = st.text_input(
         "🔍 Buscar por handle o nombre",
@@ -4215,6 +4383,10 @@ def page_dashboard() -> None:
             use_container_width=True, hide_index=True,
         )
 
+    # ── Sección TikTok ──
+    st.divider()
+    _render_tiktok_dashboard_section()
+
     # ── Trigger manual (solo admin) ──
     if auth.is_admin():
         st.divider()
@@ -4223,10 +4395,11 @@ def page_dashboard() -> None:
                 "El snapshot automático corre cada lunes 7 AM CDMX vía GitHub Actions. "
                 "Usa este botón si necesitas un snapshot fuera de horario."
             )
-            if st.button(":material/sync: Snapshot @felyfit_mx ahora",
+            b1, b2 = st.columns(2)
+            if b1.button(":material/sync: Snapshot IG @felyfit_mx",
                           type="primary", use_container_width=True,
                           key="dashboard_manual_snapshot"):
-                with st.spinner("Scrapeando @felyfit_mx…"):
+                with st.spinner("Scrapeando IG @felyfit_mx…"):
                     try:
                         res = apify_jobs.snapshot_account("felyfit_mx")
                         if res.get("error"):
@@ -4240,6 +4413,117 @@ def page_dashboard() -> None:
                             st.rerun()
                     except Exception as e:
                         st.error(f"Error: {type(e).__name__}: {e}")
+            if b2.button(":material/sync: Snapshot TT @felyfit_mx",
+                          use_container_width=True,
+                          key="dashboard_tt_manual_snapshot"):
+                with st.spinner("Scrapeando TikTok @felyfit_mx…"):
+                    try:
+                        res = tiktok_jobs.snapshot_tiktok_account("felyfit_mx")
+                        if res.get("error"):
+                            st.warning(f"{res['error']}")
+                        else:
+                            st.success(
+                                f"✅ Snapshot TT tomado · "
+                                f"{int(res['followers']):,} fans"
+                            )
+                            st.rerun()
+                    except Exception as e:
+                        st.error(f"Error: {type(e).__name__}: {e}")
+
+
+def _render_tiktok_dashboard_section() -> None:
+    """Sección TikTok del Dashboard: metric cards + chart followers TT."""
+    st.subheader(":material/music_video: TikTok — @felyfit_mx")
+
+    tt_snaps = fetch_df("""
+        SELECT captured_at, followers, following, total_hearts, video_count,
+                avg_likes, avg_comments, avg_views, engagement_rate
+        FROM tiktok_account_snapshots
+        WHERE handle = 'felyfit_mx'
+        ORDER BY captured_at
+    """)
+
+    if tt_snaps.empty:
+        st.caption(
+            "_Sin snapshots TikTok aún. El cron los captura cada lunes 7 AM "
+            "CDMX. Si @felyfit_mx TikTok no ha subido videos, el snapshot "
+            "solo captura followers/hearts hasta que empiecen a publicar._"
+        )
+        return
+
+    tt_snaps["captured_at"] = pd.to_datetime(tt_snaps["captured_at"],
+                                              format="ISO8601", errors="coerce")
+    tt_snaps = tt_snaps.dropna(subset=["captured_at"]).reset_index(drop=True)
+    latest = tt_snaps.iloc[-1]
+
+    # Delta vs snapshot de hace ~7 días
+    one_week_ago = latest["captured_at"] - pd.Timedelta(days=7)
+    older = tt_snaps[tt_snaps["captured_at"] <= one_week_ago]
+    week_ago = older.iloc[-1] if not older.empty else None
+
+    def _delta(curr, prev, fmt="{:+,.0f}"):
+        if prev is None or pd.isna(prev):
+            return None
+        d = curr - prev
+        return fmt.format(d) if d != 0 else None
+
+    mc1, mc2, mc3, mc4 = st.columns(4)
+    mc1.metric(
+        "Fans (followers)",
+        f"{int(latest['followers'] or 0):,}",
+        delta=_delta(latest["followers"],
+                      week_ago["followers"] if week_ago is not None else None)
+                      if week_ago is not None else None,
+        help="Cambio vs hace 7 días",
+    )
+    mc2.metric(
+        "Total hearts",
+        f"{int(latest['total_hearts'] or 0):,}",
+        delta=_delta(latest["total_hearts"],
+                      week_ago["total_hearts"] if week_ago is not None else None)
+                      if week_ago is not None else None,
+    )
+    mc3.metric(
+        "Videos publicados",
+        f"{int(latest['video_count'] or 0):,}",
+        delta=_delta(latest["video_count"],
+                      week_ago["video_count"] if week_ago is not None else None)
+                      if week_ago is not None else None,
+    )
+    er_now = float(latest["engagement_rate"] or 0) * 100
+    er_delta = None
+    if week_ago is not None and not pd.isna(week_ago["engagement_rate"]):
+        d = er_now - float(week_ago["engagement_rate"]) * 100
+        if d != 0:
+            er_delta = f"{d:+.2f}pp"
+    mc4.metric("ER TT", f"{er_now:.2f}%", delta=er_delta,
+                help="Cambio vs hace 7 días")
+
+    st.caption(f"Último snapshot: "
+                f"{latest['captured_at'].strftime('%Y-%m-%d %H:%M')} · "
+                f"{len(tt_snaps)} snapshots totales")
+
+    # Chart de followers TT (semanal, mismo formato que IG)
+    if len(tt_snaps) >= 2:
+        tt_snaps["week_label"] = tt_snaps["captured_at"].dt.strftime("W%V")
+        weekly = (tt_snaps.sort_values("captured_at")
+                        .groupby("week_label", sort=False)
+                        .agg(followers=("followers", "last"),
+                              captured_at=("captured_at", "last"))
+                        .reset_index()
+                        .sort_values("captured_at"))
+        _diff = weekly["followers"].diff()
+        weekly["delta_lbl"] = _diff.apply(
+            lambda d: "" if pd.isna(d) or d == 0 else f"{int(d):+,d}"
+        )
+        st.markdown("**📈 Followers TT semana a semana**")
+        st.altair_chart(
+            ff_line_chart(weekly, "week_label", "followers",
+                          x_title="Semana", y_title="Fans", height=280,
+                          secondary_label_col="delta_lbl",
+                          emphasis="delta"),
+            use_container_width=True,
+        )
 
 
 def page_settings() -> None:

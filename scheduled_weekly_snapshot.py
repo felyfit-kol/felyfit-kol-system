@@ -17,11 +17,16 @@ sys.path.insert(0, str(PROJECT_DIR))
 
 import db
 import apify_jobs
+import tiktok_jobs
 
 LOG_FILE = PROJECT_DIR / "data" / "weekly_snapshot.log"
 
-# Cuentas a trackear semanalmente. Extender aquí cuando haya más.
-TRACKED_ACCOUNTS = ["felyfit_mx"]
+# Cuentas a trackear semanalmente en cada plataforma.
+TRACKED_ACCOUNTS = ["felyfit_mx"]        # Instagram
+TRACKED_TT_ACCOUNTS = ["felyfit_mx"]     # TikTok (@felyfit_mx TT existe pero
+                                          # aún sin videos — el snapshot va a
+                                          # capturar followers=0 hasta que suba
+                                          # su primer video)
 
 
 def log(msg: str) -> None:
@@ -44,7 +49,7 @@ def main() -> int:
 
     failed = 0
     for handle in TRACKED_ACCOUNTS:
-        log(f"Snapshotting @{handle}…")
+        log(f"[IG] Snapshotting @{handle}…")
         try:
             res = apify_jobs.snapshot_account(handle)
             if res.get("error"):
@@ -60,8 +65,33 @@ def main() -> int:
             log(f"  ❌ Exception: {type(e).__name__}: {e}")
             failed += 1
 
+    # TikTok snapshots
+    for handle in TRACKED_TT_ACCOUNTS:
+        log(f"[TT] Snapshotting @{handle}…")
+        try:
+            res = tiktok_jobs.snapshot_tiktok_account(handle)
+            if res.get("error"):
+                log(f"  ❌ {res['error']}")
+                # Perfil TT sin videos NO es error crítico (@felyfit_mx no
+                # ha subido nada). Solo contamos como failed si el mensaje
+                # sugiere problema sistémico (Apify bloqueado, network, etc.).
+                if "transient" not in res["error"].lower() and \
+                    "sin datos" not in res["error"].lower():
+                    failed += 1
+            else:
+                er = res.get("engagement_rate") or 0
+                log(
+                    f"  ✓ {res['followers']:,} fans · "
+                    f"{res.get('video_count') or 0:,} videos · "
+                    f"ER {er*100:.2f}%"
+                )
+        except Exception as e:
+            log(f"  ❌ Exception: {type(e).__name__}: {e}")
+            failed += 1
+
+    total = len(TRACKED_ACCOUNTS) + len(TRACKED_TT_ACCOUNTS)
     if failed:
-        log(f"Done con errores: {failed}/{len(TRACKED_ACCOUNTS)} handle(s) fallaron.")
+        log(f"Done con errores: {failed}/{total} handle(s) fallaron.")
         return 1
     log("Done OK.")
     return 0

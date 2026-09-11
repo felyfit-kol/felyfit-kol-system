@@ -337,3 +337,108 @@ def lookup_tiktok_profile(handle: str) -> Dict:
                               key=lambda v: v.get("views") or 0,
                               reverse=True)[:3],
     }
+
+
+# ============================================================
+# SCOUTING TikTok — por hashtag / competitor mentions
+# ============================================================
+def _upsert_tiktok_candidate(handle: str, **fields) -> bool:
+    """Insert if new, update otherwise. Devuelve True si es nueva."""
+    if not handle:
+        return False
+    handle = handle.lower().lstrip("@")
+    with db.connect() as conn:
+        existing = conn.execute(
+            "SELECT handle FROM tiktok_candidates WHERE handle=?", (handle,)
+        ).fetchone()
+        if existing:
+            if not fields:
+                return False
+            cols = ", ".join(f"{k}=?" for k in fields)
+            conn.execute(
+                f"UPDATE tiktok_candidates SET {cols} WHERE handle=?",
+                (*fields.values(), handle),
+            )
+            return False
+        # Nuevo insert
+        cols = ["handle"] + list(fields.keys())
+        placeholders = ", ".join("?" * len(cols))
+        conn.execute(
+            f"INSERT INTO tiktok_candidates ({', '.join(cols)}) VALUES ({placeholders})",
+            (handle, *fields.values()),
+        )
+        return True
+
+
+def scout_tiktok_hashtag(hashtag: str, *, results_limit: int = 50) -> Dict:
+    """Scrape videos del hashtag TT, extrae authors, persiste como
+    tiktok_candidates 'discovered'. No enriquece profile aquí (eso es paso 2).
+    """
+    hashtag = hashtag.lstrip("#").lower()
+    actor = config.APIFY_ACTORS["tiktok_scraper"]
+
+    # clockworks/tiktok-scraper acepta `hashtags: ["fitness"]` como input
+    run = apify_jobs.client().actor(actor).call(run_input={
+        "hashtags": [hashtag],
+        "resultsPerPage": results_limit,
+        "shouldDownloadCovers": False,
+        "shouldDownloadVideos": False,
+    })
+    apify_run_id = run["id"]
+    compute_usd = (run.get("stats", {}).get("computeUnits") or 0) * 0.30
+
+    seen = 0
+    new = 0
+    seen_handles = set()  # dedup en memoria
+    for item in apify_jobs.client().dataset(run["defaultDatasetId"]).iterate_items():
+        seen += 1
+        am = item.get("authorMeta") or {}
+        author = (am.get("name") or "").lower().lstrip("@")
+        if not author or author in seen_handles:
+            continue
+        seen_handles.add(author)
+        # Pre-filter: descarta marcas obvias por keywords en handle
+        skip_kws = config.IDEAL_CRITERIA.get("skip_handle_keywords", [])
+        if any(kw in author for kw in skip_kws):
+            continue
+        was_new = _upsert_tiktok_candidate(
+            author,
+            source="hashtag",
+            source_detail=f"#{hashtag}",
+            tiktok_id=str(am.get("id") or "") or None,
+            nickname=am.get("nickName"),
+            bio=am.get("signature"),
+            followers=int(am.get("fans") or 0),
+            following=int(am.get("following") or 0),
+            total_hearts=int(am.get("heart") or 0),
+            video_count=int(am.get("video") or 0),
+            is_verified=1 if am.get("verified") else 0,
+            is_private=1 if am.get("privateAccount") else 0,
+            profile_pic_url=am.get("originalAvatarUrl") or am.get("avatar"),
+        )
+        if was_new:
+            new += 1
+
+    return {
+        "hashtag": hashtag, "apify_run_id": apify_run_id,
+        "seen": seen, "new": new, "unique_authors": len(seen_handles),
+        "compute_usd": compute_usd,
+    }
+
+
+def scout_tiktok_hashtags_batch(hashtags: List[str],
+                                  results_limit: int = 50) -> Dict:
+    """Corre scouting para lista de hashtags TT. Devuelve agregado."""
+    totals = {"runs": 0, "seen": 0, "new": 0, "compute_usd": 0.0,
+                "details": []}
+    for h in hashtags:
+        try:
+            res = scout_tiktok_hashtag(h, results_limit=results_limit)
+            totals["runs"] += 1
+            totals["seen"] += res["seen"]
+            totals["new"] += res["new"]
+            totals["compute_usd"] += res["compute_usd"]
+            totals["details"].append(res)
+        except Exception as e:
+            totals["details"].append({"hashtag": h, "error": str(e)})
+    return totals
