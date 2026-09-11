@@ -88,6 +88,24 @@ APIFY_ACTORS = {
     "instagram_scraper": "apify/instagram-scraper",
     "instagram_post": "apify/instagram-post-scraper",
     "instagram_stories": "gordian/instagram-story-scraper",  # $0.001/story
+    "tiktok_scraper":   "clockworks/tiktok-scraper",         # profile + videos
+    "tiktok_hashtag":   "clockworks/tiktok-scraper",         # mismo actor, distinto input
+}
+
+
+# ============================================================
+# Multiplicadores EMV específicos para TikTok.
+# TT vs IG difieren: views son MUCHO más baratas (autoplay agresivo,
+# playCount infla), pero shares/saves tienen más peso porque implican
+# intent real. Cambiar aquí para tunear el EMV de collabs TT sin afectar IG.
+# ============================================================
+TIKTOK_EMV_MULTIPLIERS = {
+    "like_mxn":    0.15,   # ~50% del IG like — audiencia menos comercial
+    "comment_mxn": 3.00,   # igual que IG (comentario es intent real)
+    "save_mxn":    6.00,   # bookmark en TT = intent alto (más que IG save)
+    "share_mxn":   4.00,   # share sí importa pero menos que en IG (ephemeral)
+    "view_mxn":    0.01,   # 1/5 del IG view — autoplay infla mucho
+    "follower_mxn": 8.00,  # follower TT vale menos que IG follower en el brief
 }
 
 # ============================================================

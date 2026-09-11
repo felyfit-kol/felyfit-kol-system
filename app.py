@@ -21,6 +21,7 @@ import pandas as pd
 import streamlit as st
 
 import apify_jobs
+import tiktok_jobs
 import auth
 import config
 import db
@@ -1514,8 +1515,190 @@ def page_scouting() -> None:
 # ============================================================
 # PAGE: Buscar perfil directo (lookup por handle)
 # ============================================================
+def _tt_tier_from_followers(fans: int) -> str:
+    """Tier según followers TT. Mismo esquema que IG."""
+    for name, low, high in config.TIERS_K:
+        low_n = low * 1000
+        high_n = high * 1000
+        if low_n <= fans < high_n:
+            return name
+    return "mega" if fans >= 500_000 else "?"
+
+
+def _render_tiktok_lookup_flow() -> None:
+    """Flujo Stalkear TikTok: form + historial + render del último resultado."""
+    st.caption("Pega un @handle de TikTok. Trae perfil, métricas y top-3 videos por views. "
+                "Cuesta ~$0.01 USD por análisis.")
+
+    c1, c2 = st.columns([3, 1])
+    handle_input = c1.text_input("Handle de TikTok (con o sin @)",
+                                    placeholder="ej. felyfit_mx",
+                                    key="tt_lookup_handle")
+    c2.write(""); c2.write("")
+    go = c2.button("🔍 Analizar", type="primary",
+                    use_container_width=True, key="tt_lookup_go")
+
+    # Historial global TT
+    tt_history = fetch_df("""
+        SELECT looked_up_at, handle, nickname, followers, total_hearts,
+                video_count, engagement_rate, profile_pic_url
+        FROM tiktok_lookup_history
+        ORDER BY looked_up_at DESC LIMIT 50
+    """)
+    if not tt_history.empty:
+        with st.expander(f"📋 Historial TikTok ({len(tt_history)} más recientes)"):
+            tt_history["ER %"] = (pd.to_numeric(tt_history["engagement_rate"],
+                                                  errors="coerce") * 100).round(2)
+            tt_history["Followers"] = tt_history["followers"].fillna(0).astype(int).map("{:,}".format)
+            tt_history["Hearts"] = tt_history["total_hearts"].fillna(0).astype(int).map("{:,}".format)
+            tt_history["Videos"] = tt_history["video_count"].fillna(0).astype(int)
+            tt_history["Foto"] = tt_history["profile_pic_url"].apply(_to_image_src)
+            display = tt_history[["Foto", "looked_up_at", "handle", "nickname",
+                                    "Followers", "Hearts", "Videos", "ER %"]]
+            display = display.rename(columns={
+                "looked_up_at": "Fecha", "handle": "Handle",
+                "nickname": "Nombre",
+            })
+            st.dataframe(display, use_container_width=True, hide_index=True,
+                          column_config={"Foto": st.column_config.ImageColumn("Foto", width="small")})
+
+    if not go and "tt_last_lookup" not in st.session_state:
+        return
+
+    if go and handle_input:
+        clean = handle_input.strip().lstrip("@")
+        with st.spinner(f"Analizando @{clean} en TikTok…"):
+            result = tiktok_jobs.lookup_tiktok_profile(clean)
+        if result.get("error"):
+            st.error(f"Error: {result['error']}")
+            return
+        st.session_state.tt_last_lookup = result
+        st.rerun()
+
+    result = st.session_state.get("tt_last_lookup")
+    if not result:
+        return
+
+    st.divider()
+
+    # ===== HERO =====
+    pic_col, info_col = st.columns([1, 3])
+    with pic_col:
+        pic = _to_image_src(result.get("profile_pic_url"))
+        if pic:
+            st.image(pic, width=200)
+    with info_col:
+        verified = " ✓" if result.get("is_verified") else ""
+        privacy = " 🔒" if result.get("is_private") else ""
+        st.markdown(f"### @{result['handle']}{verified}{privacy}")
+        if result.get("nickname"):
+            st.markdown(f"**{result['nickname']}**")
+        if result.get("bio"):
+            st.markdown(f"_{result['bio'][:400]}_")
+        if result.get("bio_link"):
+            st.markdown(f"🔗 [{result['bio_link']}]({result['bio_link']})")
+        st.link_button("👁 Abrir TikTok",
+                        f"https://www.tiktok.com/@{result['handle']}")
+        if result.get("account_created_at"):
+            st.caption(f"Cuenta creada: {result['account_created_at'][:10]}")
+
+    st.divider()
+
+    # ===== MÉTRICAS =====
+    st.subheader(":material/analytics: Métricas TikTok")
+
+    fans = int(result.get("followers") or 0)
+    hearts = int(result.get("total_hearts") or 0)
+    vids = int(result.get("video_count") or 0)
+    er = float(result.get("engagement_rate") or 0)
+    avg_L = float(result.get("avg_likes") or 0)
+    avg_C = float(result.get("avg_comments") or 0)
+    avg_V = float(result.get("avg_views") or 0)
+    avg_S = float(result.get("avg_shares") or 0)
+    avg_sv = float(result.get("avg_saves") or 0)
+    tier = _tt_tier_from_followers(fans)
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Followers", f"{fans:,}")
+    m2.metric("Total hearts", f"{hearts:,}",
+                help="Likes totales acumulados en toda la cuenta.")
+    m3.metric("Videos publicados", f"{vids:,}")
+    m4.metric("ER", f"{er * 100:.2f}%",
+                help="(avg likes + comments) / followers")
+
+    m5, m6, m7, m8 = st.columns(4)
+    m5.metric("Avg likes/video", f"{avg_L:,.0f}")
+    m6.metric("Avg comments/video", f"{avg_C:,.0f}")
+    m7.metric("Avg views/video", f"{avg_V:,.0f}")
+    m8.metric("Avg shares/video", f"{avg_S:,.0f}")
+
+    m9, mA, mB, mC = st.columns(4)
+    m9.metric("Avg saves/video", f"{avg_sv:,.0f}")
+    mA.metric("Tier", tier)
+    if result.get("last_post_at"):
+        mB.metric("Último post", str(result["last_post_at"])[:10])
+    else:
+        mB.metric("Último post", "—")
+    mC.metric("Videos scrapeados", result.get("videos_scraped", 0))
+
+    st.divider()
+
+    # ===== TOP 3 VIDEOS =====
+    top = result.get("top_videos") or []
+    if top:
+        st.subheader(":material/rocket_launch: Top 3 videos por views")
+        cols = st.columns(3)
+        for i, v in enumerate(top):
+            with cols[i]:
+                if v.get("cover_url"):
+                    st.image(_to_image_src(v["cover_url"]), use_container_width=True)
+                st.markdown(f"**{int(v.get('views') or 0):,} views**")
+                st.caption(
+                    f"❤️ {int(v.get('likes') or 0):,}   "
+                    f"💬 {int(v.get('comments') or 0):,}   "
+                    f"↗ {int(v.get('shares') or 0):,}   "
+                    f"🔖 {int(v.get('saves') or 0):,}"
+                )
+                if v.get("caption"):
+                    st.caption(f"_{v['caption'][:120]}_")
+                if v.get("video_url"):
+                    st.link_button("Ver en TikTok", v["video_url"])
+
+    # ===== EMV proyectado (con TIKTOK_EMV_MULTIPLIERS) =====
+    tt_mult = config.TIKTOK_EMV_MULTIPLIERS
+    projected_emv_per_video = (
+        avg_L * tt_mult["like_mxn"]
+        + avg_C * tt_mult["comment_mxn"]
+        + avg_V * tt_mult["view_mxn"]
+        + avg_S * tt_mult["share_mxn"]
+        + avg_sv * tt_mult["save_mxn"]
+    )
+    st.divider()
+    st.subheader(":material/payments: EMV proyectado por video")
+    e1, e2 = st.columns(2)
+    e1.metric("EMV promedio por video (TikTok)",
+                f"${projected_emv_per_video:,.0f} MXN",
+                help="Basado en multipliers TikTok específicos (likes 0.15, "
+                      "comments 3.0, views 0.01, shares 4.0, saves 6.0)")
+    # Cash sugerido = EMV / 3 (target ratio)
+    max_cash = projected_emv_per_video / config.EMV_TARGET_RATIO
+    e2.metric("Cash máx. sugerido (1 video)",
+                f"${max_cash:,.0f} MXN",
+                help=f"Con target ratio {config.EMV_TARGET_RATIO:.1f}x")
+
+
 def page_profile_lookup() -> None:
     st.header(":material/person_search: Stalkear perfil")
+
+    # Toggle plataforma
+    platform = st.radio(
+        "Plataforma", ["Instagram", "TikTok"], horizontal=True,
+        key="stalkear_platform", label_visibility="collapsed",
+    )
+    if platform == "TikTok":
+        _render_tiktok_lookup_flow()
+        return
+
     st.caption("Búsqueda directa: pega un handle de IG, te devuelve toda la info del perfil "
                "+ una recomendación de tipo de colaboración basada en sus métricas.")
 

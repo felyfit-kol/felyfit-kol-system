@@ -466,6 +466,159 @@ CREATE TABLE IF NOT EXISTS lookup_history (
 
 CREATE INDEX IF NOT EXISTS idx_lookup_handle ON lookup_history(handle);
 CREATE INDEX IF NOT EXISTS idx_lookup_at ON lookup_history(looked_up_at DESC);
+
+
+-- ============================================================
+-- TikTok — universo paralelo al de IG
+-- Tabla `tiktok_candidates` es espejo de `candidates` pero con métricas
+-- nativas TT (fans=followers, heart=likes-totales-perfil, digg=likes-dados,
+-- video=cantidad-videos). Un mismo @handle en IG y TT son perfiles distintos
+-- (dos rows separadas) por decisión de diseño.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS tiktok_candidates (
+    handle              TEXT PRIMARY KEY,       -- TT username, sin @
+    tiktok_id           TEXT,                   -- authorMeta.id (numérico)
+    nickname            TEXT,                   -- display name
+    bio                 TEXT,                   -- signature
+    bio_link            TEXT,                   -- bioLink
+    followers           INTEGER,                -- fans
+    following           INTEGER,                -- following
+    friends             INTEGER,                -- mutual follows
+    total_hearts        INTEGER,                -- heart (likes recibidos)
+    likes_given         INTEGER,                -- digg
+    video_count         INTEGER,                -- video
+    is_verified         INTEGER DEFAULT 0,
+    is_private          INTEGER DEFAULT 0,
+    is_commerce_user    INTEGER DEFAULT 0,      -- commerceUserInfo.commerceUser
+    is_tt_seller        INTEGER DEFAULT 0,
+    has_active_story    INTEGER DEFAULT 0,
+    profile_pic_url     TEXT,
+    account_created_at  TIMESTAMP,              -- createTime (unix→ISO)
+
+    -- Metricas calculadas del enriquecimiento (últimos videos)
+    avg_likes           REAL,
+    avg_comments        REAL,
+    avg_views           REAL,                    -- playCount
+    avg_shares          REAL,                    -- shareCount
+    avg_saves           REAL,                    -- collectCount
+    engagement_rate     REAL,                    -- (avg_L + avg_C) / followers
+    posting_freq_week   REAL,
+    last_post_at        TIMESTAMP,
+
+    -- Contexto
+    estimated_city      TEXT,
+    inferred_niches     TEXT,                    -- JSON
+    tier                TEXT,                    -- nano/micro/mid/macro/mega
+    country             TEXT,
+    gender              TEXT,
+    account_type        TEXT,
+
+    fit_score           REAL,
+    fit_score_breakdown TEXT,                    -- JSON
+    fit_score_at        TIMESTAMP,
+
+    source              TEXT,                    -- hashtag / competitor_mention / manual
+    source_detail       TEXT,
+    scout_run_id        INTEGER,
+    discovered_at       TIMESTAMP DEFAULT (datetime('now')),
+    last_enriched_at    TIMESTAMP,
+
+    status              TEXT DEFAULT 'discovered',
+        -- Mismos estados que candidates: discovered/approved/rejected/
+        -- contacted/responded/negotiating/active/declined/paused
+    rejected_reason     TEXT,
+    notes               TEXT,
+
+    filter_verdict      TEXT,
+    filter_reason       TEXT,
+
+    lark_record_id      TEXT,
+    lark_synced_at      TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_tt_candidates_status ON tiktok_candidates(status);
+CREATE INDEX IF NOT EXISTS idx_tt_candidates_fit    ON tiktok_candidates(fit_score DESC);
+
+
+-- Videos de TT (equivalente a candidate_posts en IG)
+CREATE TABLE IF NOT EXISTS tiktok_videos (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    handle          TEXT NOT NULL REFERENCES tiktok_candidates(handle),
+    video_id        TEXT UNIQUE,                 -- item.id
+    video_url       TEXT,                        -- webVideoUrl
+    posted_at       TIMESTAMP,                    -- createTime → ISO
+    likes           INTEGER,                     -- diggCount
+    comments        INTEGER,                     -- commentCount
+    views           INTEGER,                     -- playCount
+    shares          INTEGER,                     -- shareCount
+    saves           INTEGER,                     -- collectCount
+    duration_s      INTEGER,
+    caption         TEXT,                        -- text
+    hashtags        TEXT,                        -- JSON
+    mentions        TEXT,                        -- JSON
+    music_name      TEXT,
+    cover_url       TEXT,
+    captured_at     TIMESTAMP DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_tt_videos_handle ON tiktok_videos(handle);
+
+
+-- Snapshots del propio @felyfit_mx TikTok (equivalente a account_snapshots
+-- para tracking semanal en Dashboard).
+CREATE TABLE IF NOT EXISTS tiktok_account_snapshots (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    handle          TEXT NOT NULL,
+    captured_at     TIMESTAMP DEFAULT (datetime('now')),
+    followers       INTEGER,                     -- fans
+    following       INTEGER,
+    total_hearts    INTEGER,                     -- likes recibidos totales
+    video_count     INTEGER,
+    avg_likes       REAL,
+    avg_comments    REAL,
+    avg_views       REAL,
+    avg_shares      REAL,
+    avg_saves       REAL,
+    engagement_rate REAL,
+    bio             TEXT,
+    nickname        TEXT,
+    is_verified     INTEGER DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_tt_snap_handle
+    ON tiktok_account_snapshots(handle, captured_at DESC);
+
+
+-- Lookup history de TT (Stalkear TikTok)
+CREATE TABLE IF NOT EXISTS tiktok_lookup_history (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    handle          TEXT NOT NULL,
+    nickname        TEXT,
+    looked_up_at    TIMESTAMP DEFAULT (datetime('now')),
+    followers       INTEGER,
+    total_hearts    INTEGER,
+    video_count     INTEGER,
+    engagement_rate REAL,
+    tier            TEXT,
+    fit_score       REAL,
+    country         TEXT,
+    gender          TEXT,
+    account_type    TEXT,
+    avg_likes       REAL,
+    avg_comments    REAL,
+    avg_views       REAL,
+    collab_type     TEXT,
+    collab_label    TEXT,
+    collab_rationale TEXT,
+    expected_emv    REAL,
+    recommended_cash REAL,
+    max_cash_investable REAL,
+    profile_pic_url TEXT,
+    bio             TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_tt_lookup_handle ON tiktok_lookup_history(handle);
+CREATE INDEX IF NOT EXISTS idx_tt_lookup_at     ON tiktok_lookup_history(looked_up_at DESC);
 """
 
 
